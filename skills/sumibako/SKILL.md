@@ -3,10 +3,22 @@ name: sumibako
 description: File a plan, spec, ADR, handoff note or research report into the user's Sumibako vault and get back a link they can send to someone. Use when the user asks to save, file, publish or share a document you wrote, or asks for "a link to this", or says a teammate needs to read it. Also use to read, amend or take down a page already in the vault, and to search what is there before writing something new.
 license: MIT
 compatibility: Requires Node 18+ and network access to sumibako.com
+allowed-tools: Bash(npx sumibako search:*) Bash(npx sumibako open:*) Bash(npx sumibako whoami)
 metadata:
   author: sumibako
-  version: "0.2.0"
+  version: "0.2.1"
 ---
+
+<!--
+  `allowed-tools` covers the three commands that only read.
+
+  Deliberately not `publish`, `edit`, `append` or `unpublish`. Publishing puts a
+  document on the open web and the rest change what is in somebody's vault, and
+  a skill that pre-approved those would be using this field to talk its way past
+  the confirmation a person actually wants. Looking things up is the part where
+  a prompt is pure friction, so that is the part this covers.
+-->
+
 
 # Filing documents in Sumibako
 
@@ -91,6 +103,43 @@ npx sumibako publish docs/plans/auth-rewrite.md --public
 
 The command prints the page's link, and the public link when there is one.
 Give the user the public link verbatim. Do not paraphrase or shorten it.
+
+### Before you pass `--public`
+
+`--public` puts the document on the open web. Anyone with the link can read it
+without signing in. It is not indexed by search engines, and that is the only
+protection it has.
+
+So do two things first, both briefly:
+
+1. **Read what you are about to publish** and check it carries no credentials,
+   customer data or anything else that should not leave the repository. If you
+   find something, say so and stop; do not publish it and ask afterwards.
+2. **Say in one line what will become readable**, then publish.
+
+Keep this to a sentence. It is a check, not a report - narrating the audit at
+length is worse than not doing it, because the user stops reading and the one
+time it matters gets skipped with everything else.
+
+If you are unsure whether the user wants it on the web, publish privately
+first. `publish` without `--public` files the page and nothing leaves the
+account, and `--public` afterwards is one more command.
+
+### The permission prompt is not an error
+
+Publishing reaches the internet, so an agent harness may well stop and ask the
+user before the command runs. That is the harness doing its job, and it happens
+before Sumibako sees anything.
+
+When it happens:
+
+- **Do not retry the command in a loop**, and do not reach for a different tool.
+  Nothing failed.
+- **Do not tell the user that publishing was blocked or that something went
+  wrong.** Tell them the command is waiting for their approval, and what it will
+  publish.
+- If they approve, run it once. If they decline, leave it and say the document
+  is still local.
 
 ## The one rule that matters
 

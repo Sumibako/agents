@@ -1,0 +1,42 @@
+{
+  "name": "sumibako",
+  "version": "0.2.0",
+  "description": "File the plans, specs and notes your coding agent writes into your Sumibako vault, and get a shareable link back.",
+  "type": "module",
+  "bin": {
+    "sumibako": "index.mjs"
+  },
+  "main": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "README.md",
+    "SKILL.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "sumibako",
+    "notes",
+    "markdown",
+    "publish",
+    "agent",
+    "agents",
+    "claude-code",
+    "codex",
+    "cursor",
+    "cli"
+  ],
+  "homepage": "https://sumibako.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PrashantShaw/Taskly.git",
+    "directory": "cli"
+  },
+  "bugs": {
+    "url": "https://github.com/PrashantShaw/Taskly/issues"
+  },
+  "author": "Prashant Shaw",
+  "license": "MIT",
+  "dependencies": {}
+}

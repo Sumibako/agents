@@ -1,6 +1,6 @@
 {
   "name": "sumibako",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "File the plans, specs and notes your coding agent writes into your Sumibako vault, and get a shareable link back.",
   "type": "module",
   "bin": {

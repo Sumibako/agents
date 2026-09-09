@@ -1,6 +1,6 @@
 {
   "name": "sumibako",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "File the plans, specs and notes your coding agent writes into your Sumibako vault, and get a shareable link back.",
   "type": "module",
   "bin": {
@@ -30,11 +30,11 @@
   "homepage": "https://sumibako.com",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/PrashantShaw/Taskly.git",
+    "url": "git+https://github.com/sumibako/agents.git",
     "directory": "cli"
   },
   "bugs": {
-    "url": "https://github.com/PrashantShaw/Taskly/issues"
+    "url": "https://github.com/sumibako/agents/issues"
   },
   "author": "Prashant Shaw",
   "license": "MIT",

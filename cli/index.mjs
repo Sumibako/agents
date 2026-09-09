@@ -22,8 +22,30 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
-const VERSION = "0.2.0";
+/**
+ * The version, read from `package.json` rather than written twice.
+ *
+ * It was a literal here until `npm version patch` bumped the manifest and left
+ * this behind, so a freshly published 0.2.1 introduced itself as 0.2.0. That is
+ * a small lie with an outsized cost: the first thing anybody does with a bug
+ * report is ask which version, and the answer was wrong.
+ *
+ * Read lazily, so the only command that needs the file is the one that pays for
+ * it, and forgiving of a missing file: a version string is not worth failing a
+ * publish over.
+ */
+function version() {
+  try {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    return JSON.parse(
+      fs.readFileSync(path.join(here, "package.json"), "utf8"),
+    ).version;
+  } catch {
+    return "unknown";
+  }
+}
 
 /**
  * Exit code for "this machine is not connected yet".
@@ -153,7 +175,12 @@ function resolveApi() {
  * the call: an unreachable host, and a server that answered but not as this
  * API. Everything else is handed back for the caller to interpret.
  */
-async function rawCall(method, base, endpoint, { body, query, token } = {}) {
+async function rawCall(
+  method,
+  base,
+  endpoint,
+  { body, query, token, tolerateNetworkError = false } = {},
+) {
   const url = new URL(base + endpoint);
   for (const [key, value] of Object.entries(query ?? {})) {
     if (value !== undefined && value !== null) url.searchParams.set(key, String(value));
@@ -170,9 +197,22 @@ async function rawCall(method, base, endpoint, { body, query, token } = {}) {
       body: body ? JSON.stringify(body) : undefined,
     });
   } catch (error) {
+    /*
+      A dropped connection, not a refusal.
+
+      Fatal for a single command, because retrying is not ours to decide:
+      `append` and `edit` are not idempotent, and a `fetch` that rejects may
+      still have been delivered - the response is what went missing. Quietly
+      sending it again could add the same paragraph twice.
+
+      A poll is the exception, and says so by passing the flag. It repeats the
+      same question until it gets an answer or runs out of time, so one lost
+      reply should cost a couple of seconds rather than the whole command.
+    */
+    if (tolerateNetworkError) return null;
     die(
       `Could not reach ${url.origin}.`,
-      error instanceof Error ? error.message : undefined,
+      "Check your connection and run the same command again.",
     );
   }
 
@@ -400,9 +440,27 @@ async function redeemPending(base, pending, waitMs) {
   const deadline = Date.now() + waitMs;
 
   for (;;) {
-    const { response, payload } = await rawCall("POST", base, "/v1/cli/redeem", {
+    const attempt = await rawCall("POST", base, "/v1/cli/redeem", {
       body: { userCode: pending.userCode, verifier: pending.verifier },
+      tolerateNetworkError: true,
     });
+
+    /*
+      The connection dropped. Wait and ask again rather than giving up.
+
+      Almost every poll answers "pending" and consumes nothing, so repeating
+      one is free. The exception is the single reply that carries the token: if
+      that is the one that goes missing, the code has been spent and asking
+      again gets `expired`. The cost of that is one more `login`, which is why
+      this is a retry rather than something more careful.
+    */
+    if (attempt === null) {
+      if (Date.now() + REDEEM_INTERVAL_MS > deadline) return null;
+      await sleep(REDEEM_INTERVAL_MS);
+      continue;
+    }
+
+    const { response, payload } = attempt;
 
     if (!response.ok) {
       clearPending();
@@ -875,7 +933,7 @@ async function main() {
     return;
   }
   if (command === "--version" || command === "version") {
-    console.log(VERSION);
+    console.log(version());
     return;
   }
 

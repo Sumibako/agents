@@ -81,6 +81,7 @@ in the environment overrides everything, which is what CI should use.
 | --- | --- |
 | `--public` | Publish it and print a shareable link |
 | `--title <title>` | Override the title, which otherwise comes from the first heading |
+| `--icon <emoji>` | The page's icon, one emoji; without it a new page gets one guessed from its title. An `icon:` line in the file's frontmatter does the same |
 | `--key <key>` | Set the artifact's identity yourself |
 | `--new` | File a new page even if this file was filed before |
 | `--parent <page-id>` | Nest it under an existing page |
@@ -93,6 +94,7 @@ in the environment overrides everything, which is what CI should use.
 | `--find <text>` | The exact text to replace, as `open --markdown` prints it |
 | `--replace <text>` | What to put there; an empty string deletes the matched text |
 | `--title <title>` | Rename the page |
+| `--icon <emoji>` | Set the page's icon |
 | `--key <key>` | Name the page by its key rather than by a path or an id |
 
 ## Changing a page without re-sending it

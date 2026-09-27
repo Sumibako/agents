@@ -6,7 +6,9 @@ compatibility: Requires Node 18+ and network access to sumibako.com
 allowed-tools: Bash(npx sumibako search:*) Bash(npx sumibako open:*) Bash(npx sumibako whoami)
 metadata:
   author: sumibako
-  version: "0.2.1"
+  version: "0.4.0"
+  homepage: https://sumibako.com/agents
+  repository: https://github.com/sumibako/agents
 ---
 
 <!--
@@ -17,13 +19,22 @@ metadata:
   a skill that pre-approved those would be using this field to talk its way past
   the confirmation a person actually wants. Looking things up is the part where
   a prompt is pure friction, so that is the part this covers.
+
+  `metadata` is the open bag in the Agent Skills frontmatter, which is why
+  `homepage` and `repository` sit inside it rather than at the top level: a
+  key the specification does not name is a key some parser is entitled to
+  reject, and a skill whose frontmatter fails to parse is not an error anybody
+  sees - it is a skill the agent silently never loads. They are there for the
+  directories that render this file as a page, so a human who found the skill
+  on one of them has somewhere to go that is not a raw Markdown file.
 -->
 
 
 # Filing documents in Sumibako
 
-Sumibako is the user's notes vault. This skill puts a Markdown document you
-wrote into it and, on request, gives you a public link to hand back.
+[Sumibako](https://sumibako.com/agents) is the user's notes vault. This skill
+puts a Markdown document you wrote into it and, on request, gives you a public
+link to hand back.
 
 ## When to use this
 
@@ -104,6 +115,34 @@ npx sumibako publish docs/plans/auth-rewrite.md --public
 The command prints the page's link, and the public link when there is one.
 Give the user the public link verbatim. Do not paraphrase or shorten it.
 
+### Give it an icon
+
+Every page gets an icon: one emoji, shown beside the title in the sidebar and
+at the top of the page. Choose one yourself, every time, whether or not the
+user mentioned icons. A page without one looks unfinished next to the rest of
+their vault. Pick what fits the document, and a well-judged joke is welcome:
+🗺️ for a plan, ⚖️ for a decision, 🤝 for a handoff,
+🔬 for research, 🚨 for an incident, 🧯 for its post-mortem.
+
+```bash
+npx sumibako publish docs/plans/auth-rewrite.md --icon 🗺️
+```
+
+Or put it in the file's frontmatter, so it travels with the document and
+survives a re-publish from another machine:
+
+```markdown
+---
+title: Auth rewrite
+icon: 🗺️
+---
+```
+
+One emoji, not a word and not two; anything else is refused with the rule.
+If you send none, a new page gets one guessed from its title, and a page
+that already exists keeps whatever it has - which may be one the user chose
+by hand, so do not change it unless they asked.
+
 ### Before you pass `--public`
 
 `--public` puts the document on the open web. Anyone with the link can read it
@@ -173,8 +212,9 @@ npx sumibako edit docs/plans/auth.md \
   --find "We will ship this in Q3." \
   --replace "We will ship this in Q4, after the migration."
 
-# rename
+# rename, or change the icon
 npx sumibako edit docs/plans/auth.md --title "Auth rewrite, revised"
+npx sumibako edit docs/plans/auth.md --icon 🧭
 ```
 
 **`--find` must match exactly once.** It is matched against the Markdown that
@@ -202,7 +242,9 @@ npx sumibako unpublish docs/plans/auth.md     # take the link off the web
 The document is rendered as a real page, so ordinary Markdown pays off:
 
 - **The first heading becomes the page title.** Start with one `#` line saying
-  what the document is. Or put `title:` in YAML frontmatter.
+  what the document is. Or put `title:` in YAML frontmatter, with `icon:`
+  beside it. With neither, a new page is called "Untitled", and an update
+  leaves the page's title as it was.
 - Headings, lists, task lists, tables, blockquotes, links and fenced code all
   render properly. Tables are worth using for options and trade-offs.
 - Code fences keep their language and get syntax highlighting.
@@ -229,7 +271,12 @@ Two things degrade, and the command tells you when they do:
   with `open --markdown` and quote it exactly.
 - `401` - the token was revoked. The CLI forgets it, so running the same
   command again starts a fresh connect and prints a link. Relay that link.
-- `403` - the token is not allowed to publish. The user can create one that is.
-- `409` - the plan's page limit is reached. Report the message; it says which.
+- `403` - publishing was refused. Either the token lacks the permission, and
+  the user can create one that has it, or the account's email is not verified
+  yet. The message says which; do not guess.
+- `409` - a limit is reached: the plan's pages, or the account's twenty tokens
+  while connecting. Report the message; it says which, and what to do. After a
+  `409` while connecting, the same command picks up once the user has revoked
+  a token. Do not start over.
 - `413` - the document is too long. Split it.
 - `429` - too many requests. Wait the number of seconds it names.

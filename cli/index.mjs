@@ -300,7 +300,17 @@ async function callApi(method, endpoint, { body, token, query, api } = {}) {
       die(message, "Run the same command again to connect this machine.");
     }
     if (response.status === 403) {
-      die(message, "Create a token with publishing allowed, in Settings.");
+      // Two refusals share this status and only one is about the token. A
+      // missing permission names itself in the message; anything else, such
+      // as an account whose email is not verified, says what to do in its own
+      // words, and advice about tokens beside it would send somebody to fix
+      // the wrong thing.
+      die(
+        message,
+        /permission/i.test(message)
+          ? "Create a token with that permission, in Settings, under Coding agents."
+          : undefined,
+      );
     }
     if (response.status === 429) {
       const retry = response.headers.get("Retry-After");
@@ -462,6 +472,26 @@ async function redeemPending(base, pending, waitMs) {
 
     const { response, payload } = attempt;
 
+    /*
+      A 409 is the account refusing the token, not the request dying.
+
+      It is what comes back when somebody approved and the account already
+      holds its maximum of live tokens. The request is still approved and still
+      collectable, so the saved half of it is kept: once a token has been
+      revoked in Settings, the same command picks up where this left off.
+
+      Treating it like every other failure - forget the request, open a new
+      one - was a loop with no exit. The person approved, the mint was refused,
+      a new link was printed, they approved that, and at no point did anything
+      show them the sentence that says why.
+    */
+    if (response.status === 409) {
+      die(
+        payload?.error?.message ?? "The account refused a new token.",
+        "Revoke one in Settings, under Coding agents, then run the same command again.",
+      );
+    }
+
     if (!response.ok) {
       clearPending();
       return null;
@@ -514,6 +544,24 @@ async function ensureToken(base) {
 // Arguments
 // ---------------------------------------------------------------------------
 
+/**
+ * Flags that never take a value.
+ *
+ * Without this list `--public plan.md` read the file name as the flag's value
+ * and then asked "Which file?", because nothing distinguishes a switch from an
+ * option that happens to be followed by a word. An agent puts flags wherever
+ * it likes, so these never swallow the argument after them.
+ */
+const SWITCHES = new Set([
+  "public",
+  "publish",
+  "new",
+  "prepend",
+  "markdown",
+  "text",
+  "help",
+]);
+
 /** Parses `--flag value`, `--flag=value` and `--boolean` into an object. */
 function parseFlags(argv) {
   const flags = {};
@@ -532,7 +580,7 @@ function parseFlags(argv) {
     }
     const name = item.slice(2);
     const next = argv[index + 1];
-    if (next === undefined || next.startsWith("--")) {
+    if (SWITCHES.has(name) || next === undefined || next.startsWith("--")) {
       flags[name] = true;
     } else {
       flags[name] = next;
@@ -693,6 +741,9 @@ async function publish(positional, flags) {
       markdown,
       externalId: key,
       title: typeof flags.title === "string" ? flags.title : undefined,
+      // One emoji. Also read from an `icon:` frontmatter line by the server,
+      // which is the way to make it travel with the file; the flag wins.
+      icon: typeof flags.icon === "string" ? flags.icon : undefined,
       parentDocument: typeof flags.parent === "string" ? flags.parent : undefined,
       publish: wantsPublic ? true : undefined,
     },
@@ -767,11 +818,12 @@ async function edit(positional, flags) {
   }
 
   const rename = typeof flags.title === "string" ? flags.title : undefined;
+  const icon = typeof flags.icon === "string" ? flags.icon : undefined;
   const find = typeof flags.find === "string" ? flags.find : undefined;
-  if (find === undefined && rename === undefined) {
+  if (find === undefined && rename === undefined && icon === undefined) {
     die(
       "Nothing to change.",
-      "Pass --find with --replace, or --title to rename the page.",
+      "Pass --find with --replace, --title to rename the page, or --icon to set its icon.",
     );
   }
   // An empty --replace is a deletion, and has to survive the default below.
@@ -782,6 +834,7 @@ async function edit(positional, flags) {
       ...target,
       ...(find !== undefined ? { find, replace } : {}),
       ...(rename !== undefined ? { title: rename } : {}),
+      ...(icon !== undefined ? { icon } : {}),
     },
   });
   report(result, { verb: "Edited" });
@@ -796,7 +849,7 @@ async function unpublish(positional, flags) {
   const result = await callApi("POST", "/v1/pages/publish", {
     body: { ...target, publish: false },
   });
-  console.log(`${green("Taken down.")} ${bold(result.title)} is private again.`);
+  console.log(`${green("Taken down.")} ${titled(result)} is private again.`);
   console.log(dim(result.url));
 }
 
@@ -809,7 +862,7 @@ async function open(positional, flags) {
   const page = await callApi("GET", "/v1/pages", {
     query: { id: target.documentId, externalId: target.externalId },
   });
-  console.log(bold(page.title));
+  console.log(titled(page));
   console.log(page.url);
   if (page.publicUrl) console.log(green(page.publicUrl));
 
@@ -841,7 +894,7 @@ async function search(positional) {
     return;
   }
   for (const page of results) {
-    console.log(`${bold(page.title)}${page.publicUrl ? green("  public") : ""}`);
+    console.log(`${titled(page)}${page.publicUrl ? green("  public") : ""}`);
     console.log(dim(`  ${page.publicUrl ?? page.url}`));
   }
 }
@@ -858,9 +911,13 @@ async function whoami() {
 
 const limit = (value) => (value === null || !Number.isFinite(value) ? "unlimited" : value);
 
+/** A page's title as the sidebar shows it: its icon first, when it has one. */
+const titled = (page) =>
+  `${page.icon ? `${page.icon} ` : ""}${bold(page.title)}`;
+
 /** Prints the outcome of a write, link last so it is the easiest thing to copy. */
 function report(result, { verb }) {
-  console.log(`${green(verb)} ${bold(result.title)}`);
+  console.log(`${green(verb)} ${titled(result)}`);
   for (const warning of result.warnings ?? []) {
     console.log(`${yellow("note")}   ${warning}`);
   }
@@ -891,6 +948,7 @@ ${bold("sumibako")} - file what your coding agent wrote into your vault
 ${bold("Options for publish")}
   --public            publish it and print a shareable link
   --title <title>     override the title (default: the first heading)
+  --icon <emoji>      the page's icon, one emoji (default: guessed from the title)
   --key <key>         the identity of this artifact (default: its repo path)
   --new               file a new page even if this file was filed before
   --parent <page-id>  nest it under an existing page
@@ -900,6 +958,7 @@ ${bold("Options for append and edit")}
   --find <text>       the exact text to replace, as open --markdown prints it
   --replace <text>    what to put there; empty deletes the matched text
   --title <title>     rename the page
+  --icon <emoji>      set the page's icon
   --key <key>         name the page by its key rather than a path or an id
 
 ${bold("Editing a page you did not write")}

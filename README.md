@@ -12,6 +12,19 @@ npx skills add sumibako/agents
 That copies one Markdown file into your agent's skills directory. It runs no
 code and asks for no credentials.
 
+[skills.sh](https://www.skills.sh/sumibako/agents/sumibako) prints a longer
+form of the same command, naming the repository by its full URL and the skill
+by name:
+
+```bash
+npx skills add https://github.com/sumibako/agents --skill sumibako
+```
+
+Both do the same thing. There is one skill in this repository, so there is
+nothing for `--skill` to disambiguate; the short form above is the one worth
+remembering. skills.sh also lists the audits it ran against this repository,
+which is a better reason to go there than the command is.
+
 ## Then what
 
 Ask your agent for something it would write down anyway.
@@ -39,8 +52,13 @@ You can revoke a machine's access at any time in Settings, under Coding agents.
 
 The skill is instructions, not the tool. The tool is
 [`npx sumibako`](https://www.npmjs.com/package/sumibako), which works on its
-own, and there is an MCP server for agents with no terminal. Both are covered
-at [sumibako.com/agents](https://sumibako.com/agents).
+own, and there is an MCP server for agents with no terminal, listed in the
+[official MCP Registry](https://registry.modelcontextprotocol.io/v0/servers?search=com.sumibako/sumibako)
+as `com.sumibako/sumibako`. That listing is worth a sentence only because of
+how it is granted: the registry resolved a TXT record on `sumibako.com`
+before it would accept the entry, so it is evidence the address belongs to
+whoever published it. Both are covered at
+[sumibako.com/agents](https://sumibako.com/agents).
 
 ## Source
 

@@ -6,11 +6,12 @@ Lets Claude Code, Codex, Cursor, Copilot and anything else that reads
 to someone.
 
 ```bash
-npx skills add sumibako/agents
+npx skills add sumibako/agents -g -y
 ```
 
-That copies one Markdown file into your agent's skills directory. It runs no
-code and asks for no credentials.
+That copies one Markdown file into the skills directory of every agent you
+have, at user level so it works in every project (`-g`), without asking
+which (`-y`). It runs no code and asks for no credentials.
 
 [skills.sh](https://www.skills.sh/sumibako/agents/sumibako) prints a longer
 form of the same command, naming the repository by its full URL and the skill

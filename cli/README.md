@@ -44,9 +44,15 @@ Open it, check the code matches, approve. Then run the same command again and
 it carries on. `npx sumibako login` does the same thing and waits, if you would
 rather connect first.
 
-Nothing is typed and nothing blocks, which is what lets a coding agent do this
-on your behalf: it relays the link, you click, it runs the command again. The
-token is stored in `~/.sumibako/config.json` with owner-only permissions.
+On your own computer the page opens by itself and the command waits 30 seconds
+for you to approve it, so usually the first run just finishes the job. Set
+`SUMIBAKO_NO_BROWSER=1` to turn that off. Over SSH, in CI or in a container it
+never opens anything.
+
+Nothing is typed and nothing blocks for long, which is what lets a coding agent
+do this on your behalf: it relays the link, you click, it runs the command
+again. The token is stored in `~/.sumibako/config.json` with owner-only
+permissions.
 
 Two ways round it when a browser is not in the picture. `--token <token>` takes
 one you minted yourself under **Settings, Coding agents**, and `SUMIBAKO_TOKEN`

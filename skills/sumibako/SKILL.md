@@ -58,9 +58,12 @@ not a compiler, and often a person who will never open the repo.
 ## Connecting, the first time
 
 **There is no setup step to do in advance, and nothing for the user to paste.**
-Run the command you were going to run. If this machine is not connected yet,
-the command prints a link and stops with **exit code 3** without doing any
-work:
+Run the command you were going to run. If this machine is not connected yet and
+it is the user's own computer, the command opens the approval page in their
+browser and waits up to 30 seconds. If they approve in that time it prints
+`Connected.` and carries on with the job, and there is nothing more to do.
+Otherwise, or where no browser can open (SSH, CI, a container), it prints a
+link and stops with **exit code 3** without doing any work:
 
 ```
 Connect this machine to Sumibako:

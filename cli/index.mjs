@@ -345,10 +345,19 @@ async function callApi(method, endpoint, { body, token, query, api } = {}) {
   run prints a link and exits, and a later run collects the token, so an agent
   relays one line to its user and carries on instead of sitting inside a
   command until the harness kills it.
+
+  On the person's own desktop the first run opens the page itself and waits
+  half a minute before printing the link, because somebody already signed in
+  approves in a few seconds, and then the command simply finishes its job: no
+  link to copy out of a chat, no second run. Half a minute is short enough to
+  sit inside an agent's command timeout, and after it everything is as above.
 */
 
 /** How long a redeem waits before giving the link back to the caller. */
 const REDEEM_WAIT_MS = 20_000;
+
+/** How long the first run waits after opening the approval page itself. */
+const OPENED_WAIT_MS = 30_000;
 
 /** Gap between redeem attempts while waiting. */
 const REDEEM_INTERVAL_MS = 2_000;
@@ -356,27 +365,47 @@ const REDEEM_INTERVAL_MS = 2_000;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
+ * Whether a browser opened from here would appear in front of the person.
+ *
+ * Not "is stdout a terminal": an agent running on the person's own computer
+ * has no terminal either, and that is exactly where opening the page saves
+ * them copying a link out of a chat. What rules it out is a browser that would
+ * open for nobody - over SSH, in CI, on Linux with no display, which covers
+ * containers and cloud sandboxes - or `SUMIBAKO_NO_BROWSER` being set.
+ */
+function mayOpenBrowser() {
+  const env = process.env;
+  if (env.SUMIBAKO_NO_BROWSER || env.CI) return false;
+  if (env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY) return false;
+  if (process.platform === "win32" || process.platform === "darwin") {
+    return true;
+  }
+  return Boolean(env.DISPLAY || env.WAYLAND_DISPLAY);
+}
+
+/**
  * Opens a URL in the desktop browser, and does not care if it cannot.
  *
- * Called only when stdout is a terminal. An agent, a container and a CI job all
- * fail that test, which is exactly right: there is no browser to open there,
- * and the URL is already printed for whoever can open one. That one condition
- * covers every headless case without a flag to remember.
+ * Resolves whether the opener started, which is all that can be known: nothing
+ * reports back whether a tab appeared. The link is printed either way.
  */
 function openInBrowser(url) {
-  try {
-    const [command, args] =
-      process.platform === "win32"
-        ? ["cmd", ["/c", "start", "", url]]
-        : process.platform === "darwin"
-          ? ["open", [url]]
-          : ["xdg-open", [url]];
-    const child = spawn(command, args, { stdio: "ignore", detached: true });
-    child.on("error", () => {});
-    child.unref();
-  } catch {
-    // The link is on screen either way.
-  }
+  return new Promise((resolve) => {
+    try {
+      const [command, args] =
+        process.platform === "win32"
+          ? ["cmd", ["/c", "start", "", url]]
+          : process.platform === "darwin"
+            ? ["open", [url]]
+            : ["xdg-open", [url]];
+      const child = spawn(command, args, { stdio: "ignore", detached: true });
+      child.on("error", () => resolve(false));
+      child.on("spawn", () => resolve(true));
+      child.unref();
+    } catch {
+      resolve(false);
+    }
+  });
 }
 
 /** Describes this machine for the approval page. Never a secret. */
@@ -537,6 +566,28 @@ async function ensureToken(base) {
   }
 
   const started = await startConnect(base);
+
+  if (mayOpenBrowser() && (await openInBrowser(started.verificationUrl))) {
+    console.log(`Opened ${started.verificationUrl} to connect this machine.`);
+    console.log(
+      dim(
+        `Approve it there (code ${bold(started.userCode)}). Waiting up to ${OPENED_WAIT_MS / 1000} seconds...`,
+      ),
+    );
+    const approved = await redeemPending(base, started, OPENED_WAIT_MS);
+    if (approved) {
+      console.log(`${green("Connected.")} Carrying on.`);
+      console.log();
+      return approved.token;
+    }
+    // Not yet: the tab that opened is the right page, so its link goes back.
+    const current = readPending(base);
+    if (current) needsAuth(current.verificationUrl, current.userCode);
+    // Denied or expired while waiting, which ended that request.
+    const fresh = await startConnect(base);
+    needsAuth(fresh.verificationUrl, fresh.userCode);
+  }
+
   needsAuth(started.verificationUrl, started.userCode);
 }
 
@@ -684,7 +735,7 @@ async function login(flags) {
   console.log();
   console.log(dim(`The page should show the code ${bold(pending.userCode)}.`));
 
-  if (process.stdout.isTTY) openInBrowser(pending.verificationUrl);
+  if (process.stdout.isTTY) void openInBrowser(pending.verificationUrl);
 
   const remaining = Math.max(0, (pending.expiresAt ?? 0) - Date.now());
   if (remaining === 0) {

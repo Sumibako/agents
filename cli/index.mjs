@@ -827,14 +827,23 @@ function targetFor(argument, flags) {
  *
  * Words after the target are the text. With none, it is read from stdin, so
  * `git log -1 --format=%s | sumibako append CHANGELOG.md` works.
+ *
+ * With --key the key is the target, so every word is text. Reading the first
+ * word as a target anyway threw it away along with the text after it, and
+ * `append --key log "text"` then sat waiting on stdin for text it had been
+ * given.
  */
 async function append(positional, flags) {
-  const target = targetFor(positional[0], flags);
+  const keyed = typeof flags.key === "string";
+  const target = targetFor(keyed ? undefined : positional[0], flags);
   if (!target.documentId && !target.externalId) {
-    die("Which page?", "Usage: sumibako append <file.md | page-id> \"text\"");
+    die(
+      "Which page?",
+      "Usage: sumibako append <file.md | page-id> \"text\", or append --key <key> \"text\"",
+    );
   }
 
-  const inline = positional.slice(1).join(" ");
+  const inline = positional.slice(keyed ? 0 : 1).join(" ");
   const text = inline || fs.readFileSync(0, "utf8");
   if (!text.trim()) {
     die("Nothing to add.", "Pass the text as an argument or pipe it in.");

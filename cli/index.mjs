@@ -655,18 +655,22 @@ function parseFlags(argv) {
  */
 function defaultKey(filePath) {
   const absolute = path.resolve(filePath);
-  let directory = path.dirname(absolute);
+  const root = gitRoot(path.dirname(absolute));
+  return (root ? path.relative(root, absolute) : absolute)
+    .split(path.sep)
+    .join("/");
+}
 
+/** The repository a directory is in, or null when it is in none. */
+function gitRoot(start) {
+  let directory = start;
   for (let depth = 0; depth < 40; depth += 1) {
-    if (fs.existsSync(path.join(directory, ".git"))) {
-      return path.relative(directory, absolute).split(path.sep).join("/");
-    }
+    if (fs.existsSync(path.join(directory, ".git"))) return directory;
     const parent = path.dirname(directory);
     if (parent === directory) break;
     directory = parent;
   }
-
-  return absolute.split(path.sep).join("/");
+  return null;
 }
 
 function readMarkdown(filePath) {
@@ -681,6 +685,381 @@ function readMarkdown(filePath) {
     die(`${filePath} is a directory. Point at one Markdown file.`);
   }
   return fs.readFileSync(filePath, "utf8");
+}
+
+// ---------------------------------------------------------------------------
+// Files
+// ---------------------------------------------------------------------------
+
+/*
+  Putting a picture, a recording or a document on a page.
+
+  Two ways in. An embed in the Markdown this command is about to send -
+  `![](./shot.png)` on a line - is uploaded and re-pointed at the stored copy,
+  because sent as written it is a broken image on the page. And `attach` adds
+  files named on the command line to a page that already exists.
+
+  The bytes do not go through the API. It says where to send each file, the
+  file goes straight to storage, and the API is told it arrived; that is what
+  lets a 100MB upload work at all. Every file is sent with its SHA-256 first,
+  and one the account already holds is not sent again, so publishing a plan
+  five times uploads its screenshots once.
+
+  Which block a file becomes is not decided here. The API answers with the
+  kind and the Markdown line for it, so this file holds no table of types to
+  drift out of step with the server's.
+*/
+
+/**
+ * What an embed in a Markdown file may take off the disk by itself.
+ *
+ * Narrow on purpose, and the one list of file types this file keeps. An embed
+ * is acted on without anybody naming the file on the command line, and the
+ * Markdown may be somebody else's: a document that embedded
+ * `../../customers.csv` would otherwise have this command upload it, and
+ * `--public` put it on the web. So an embed uploads the things a page shows -
+ * pictures, video, audio, a PDF - and anything else takes `attach`, where a
+ * person or their agent names the file deliberately.
+ */
+const EMBED_UPLOADS = new Set([
+  "png", "jpg", "jpeg", "gif", "webp", "avif", "svg", "bmp", "heic", "heif",
+  "mp4", "m4v", "webm", "mov",
+  "mp3", "wav", "ogg", "m4a", "aac", "flac",
+  "pdf",
+]);
+
+/** Most files named in one request, which is the API's own ceiling. */
+const FILES_PER_REQUEST = 20;
+
+/** `![alt](destination "title")`, with the destination bare or in `<>`. */
+const EMBED =
+  /!\[((?:\\.|[^\]\\])*)\]\(\s*(?:<([^<>\n]*)>|([^\s()<>]+))(?:\s+("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'))?\s*\)/;
+
+/** A byte count as a person would say it. */
+function formatBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${Math.round(kb)} KB`;
+  const mb = kb / 1024;
+  if (mb < 1024) return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
+  return `${(mb / 1024).toFixed(1)} GB`;
+}
+
+/**
+ * Every embed in a piece of Markdown, with where it sits in the text.
+ *
+ * Not a Markdown parser, and it errs one way on purpose: anything it is unsure
+ * of is left exactly as written. What it must never do is reach into code. A
+ * fenced block or a code span that shows `![](./shot.png)` is an example of
+ * the syntax, and rewriting it would change somebody's documentation and
+ * upload a file nobody asked for.
+ */
+function findEmbeds(markdown) {
+  const found = [];
+  let fence = null;
+  let offset = 0;
+
+  for (const line of markdown.split("\n")) {
+    const marker = /^[\s>]*(`{3,}|~{3,})/.exec(line);
+    const rest = marker ? line.slice(marker[0].length) : "";
+
+    if (fence) {
+      // Closed by a run of the same character at least as long, alone.
+      if (
+        marker &&
+        marker[1][0] === fence[0] &&
+        marker[1].length >= fence.length &&
+        !rest.trim()
+      ) {
+        fence = null;
+      }
+    } else if (marker && !(marker[1][0] === "`" && rest.includes("`"))) {
+      // A backtick fence cannot have a backtick after it on its line; with
+      // one, this is a code span that happens to start the line.
+      fence = marker[1];
+    } else {
+      // Code spans are blanked to the same length, so what is found in the
+      // blanked line sits at the same place in the real one.
+      const visible = line.replace(
+        /(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g,
+        (span) => " ".repeat(span.length),
+      );
+      for (const hit of visible.matchAll(new RegExp(EMBED, "g"))) {
+        const written = line.slice(hit.index, hit.index + hit[0].length);
+        const embed = EMBED.exec(written);
+        if (!embed || embed.index !== 0 || embed[0].length !== written.length) {
+          continue;
+        }
+        found.push({
+          start: offset + hit.index,
+          end: offset + hit.index + written.length,
+          alt: embed[1],
+          destination: embed[2] ?? embed[3],
+          // As written, quotes included, so it can go back unchanged.
+          title: embed[4] ?? "",
+        });
+      }
+    }
+    offset += line.length + 1;
+  }
+
+  return found;
+}
+
+/** True when `file` is inside `directory`, and not the directory itself. */
+function isInside(directory, file) {
+  const relative = path.relative(directory, file);
+  return (
+    relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative)
+  );
+}
+
+/**
+ * Decides what an embed's destination is: an address, a file to upload, or a
+ * file to leave alone and say why.
+ *
+ * Returns null for an address, which is none of this command's business.
+ * Otherwise `{ file }` for one to upload, or `{ note }` for one that stays as
+ * written.
+ *
+ * Two fences, both from the reasoning on `EMBED_UPLOADS`. The type has to be
+ * one a page shows. And the file has to be inside the repository the Markdown
+ * is in, or inside the Markdown's own folder when it is in no repository, so
+ * that an embed cannot walk up out of the project to something else on the
+ * machine. The check is made on the real path, after links are followed,
+ * because a link inside the repository can point anywhere.
+ */
+function locateEmbed(destination, baseDir) {
+  const written = destination.trim();
+  if (!written) return null;
+  // A scheme of two letters or more. One letter is a Windows drive.
+  if (/^[a-z][a-z0-9+.-]+:/i.test(written)) return null;
+  if (/^(\/\/|#|\?)/.test(written)) return null;
+
+  // As written first, then with `%20` and the like decoded, because both are
+  // how a path with a space in it gets into Markdown.
+  const candidates = [written];
+  try {
+    const decoded = decodeURIComponent(written);
+    if (decoded !== written) candidates.push(decoded);
+  } catch {
+    // Not percent-encoding after all.
+  }
+
+  let file = null;
+  for (const candidate of candidates) {
+    const absolute = path.resolve(baseDir, candidate);
+    try {
+      if (fs.statSync(absolute).isFile()) {
+        file = fs.realpathSync(absolute);
+        break;
+      }
+    } catch {
+      // Not there under this spelling.
+    }
+  }
+  if (!file) {
+    return {
+      note: `No file at ${written}, so it will not load on the page.`,
+    };
+  }
+
+  if (!EMBED_UPLOADS.has(path.extname(file).slice(1).toLowerCase())) {
+    return {
+      note: `Left ${written} as written: an embed uploads images, video, audio and PDF only. Use \`sumibako attach\` for other files.`,
+    };
+  }
+
+  let root = gitRoot(baseDir) ?? baseDir;
+  try {
+    root = fs.realpathSync(root);
+  } catch {
+    // Compared as it stands.
+  }
+  if (!isInside(root, file)) {
+    return {
+      note: `Left ${written} as written: it is outside ${root}. Use \`sumibako attach\` to add it deliberately.`,
+    };
+  }
+
+  return { file };
+}
+
+/**
+ * An embed, re-pointed at the stored copy of its file.
+ *
+ * A picture keeps the alt text and caption its author wrote. Anything else is
+ * known to the page by its file name - that is how `![demo.mp4](...)` is read
+ * as a video rather than an image - so the name takes the alt text's place,
+ * and what was written there becomes the caption unless there already is one.
+ */
+function hostedEmbed(embed, stored) {
+  if (stored.kind === "image") {
+    return `![${embed.alt}](${stored.url}${embed.title ? ` ${embed.title}` : ""})`;
+  }
+  // A type the vault has no block for goes on the page as the link it sent.
+  if (stored.kind === "link" || !stored.markdown.endsWith(")")) {
+    return stored.markdown;
+  }
+
+  const alt = embed.alt.trim();
+  const caption =
+    embed.title ||
+    (alt && alt !== stored.name ? `"${alt.replace(/(["\\])/g, "\\$1")}"` : "");
+  return caption
+    ? `${stored.markdown.slice(0, -1)} ${caption})`
+    : stored.markdown;
+}
+
+/** Sends one file's bytes to where the API said, and returns its storage id. */
+async function sendBytes(uploadUrl, entry, contentType) {
+  let response;
+  try {
+    // To storage directly, and without the token: this address is not the
+    // API, and it is already signed for this one upload.
+    response = await fetch(uploadUrl, {
+      method: "POST",
+      headers: { "Content-Type": contentType || "application/octet-stream" },
+      body: fs.readFileSync(entry.file),
+    });
+  } catch {
+    die(
+      `Could not upload ${entry.name}.`,
+      "Check your connection and run the same command again.",
+    );
+  }
+
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch {
+    // Handled below, with every other answer that is not a storage id.
+  }
+  if (!response.ok || typeof payload?.storageId !== "string") {
+    die(
+      `Could not upload ${entry.name} (HTTP ${response.status}).`,
+      "Run the same command again.",
+    );
+  }
+  return payload.storageId;
+}
+
+/**
+ * Stores files in the vault and returns what the API said about each, keyed by
+ * path: its address, what kind of block it is, and the Markdown line for it.
+ *
+ * Nothing is written to a page here. If a file does not fit the plan the API
+ * refuses the whole batch before any of it is sent, and this stops with its
+ * message, so a page is never filed with one of its pictures missing.
+ */
+async function uploadFiles(paths) {
+  const entries = paths.map((file) => {
+    const size = fs.statSync(file).size;
+    if (size === 0) die(`${file} is empty.`);
+    return {
+      file,
+      name: path.basename(file),
+      size,
+      sha256: crypto
+        .createHash("sha256")
+        .update(fs.readFileSync(file))
+        .digest("hex"),
+    };
+  });
+
+  const misread = () =>
+    die(
+      "The server answered in a way this version does not understand.",
+      "Update with: npx sumibako@latest",
+    );
+
+  const stored = new Map();
+  for (let at = 0; at < entries.length; at += FILES_PER_REQUEST) {
+    const batch = entries.slice(at, at + FILES_PER_REQUEST);
+
+    const asked = await callApi("POST", "/v1/files/upload", {
+      body: {
+        files: batch.map(({ name, size, sha256 }) => ({ name, size, sha256 })),
+      },
+    });
+    if (!Array.isArray(asked.files) || asked.files.length !== batch.length) {
+      misread();
+    }
+
+    const sent = [];
+    for (const [index, answer] of asked.files.entries()) {
+      const entry = batch[index];
+      if (answer.stored) {
+        stored.set(entry.file, answer);
+        console.log(dim(`Already stored ${entry.name}`));
+        continue;
+      }
+      sent.push({
+        entry,
+        storageId: await sendBytes(answer.uploadUrl, entry, answer.contentType),
+      });
+    }
+    if (sent.length === 0) continue;
+
+    const kept = await callApi("POST", "/v1/files", {
+      body: {
+        files: sent.map(({ entry, storageId }) => ({
+          storageId,
+          name: entry.name,
+        })),
+      },
+    });
+    if (!Array.isArray(kept.files) || kept.files.length !== sent.length) {
+      misread();
+    }
+    for (const [index, file] of kept.files.entries()) {
+      stored.set(sent[index].entry.file, file);
+      console.log(
+        `${green("Uploaded")} ${file.name} ${dim(`(${formatBytes(file.size)})`)}`,
+      );
+    }
+  }
+
+  return stored;
+}
+
+/**
+ * Uploads the local files a piece of Markdown embeds, and returns the Markdown
+ * pointing at the stored copies.
+ *
+ * `baseDir` is what a relative path is relative to: the Markdown file's own
+ * folder when it came from a file, and the working directory when it came
+ * from the command line or a pipe.
+ *
+ * `notes` says which embeds were left as written and why. They are printed
+ * with the result, because the caller is usually an agent that will not look
+ * at the page and would otherwise never learn that a picture is missing.
+ */
+async function embedLocalFiles(markdown, baseDir) {
+  const notes = new Set();
+  const wanted = [];
+
+  for (const embed of findEmbeds(markdown)) {
+    const located = locateEmbed(embed.destination, baseDir);
+    if (!located) continue;
+    if (located.note) notes.add(located.note);
+    else wanted.push({ embed, file: located.file });
+  }
+  if (wanted.length === 0) return { markdown, notes: [...notes] };
+
+  const stored = await uploadFiles([...new Set(wanted.map(({ file }) => file))]);
+
+  // Last first, so the positions of the ones still to do stay true.
+  let rewritten = markdown;
+  for (const { embed, file } of wanted.sort(
+    (a, b) => b.embed.start - a.embed.start,
+  )) {
+    rewritten =
+      rewritten.slice(0, embed.start) +
+      hostedEmbed(embed, stored.get(file)) +
+      rewritten.slice(embed.end);
+  }
+  return { markdown: rewritten, notes: [...notes] };
 }
 
 // ---------------------------------------------------------------------------
@@ -775,8 +1154,14 @@ async function publish(positional, flags) {
     die("Which file?", "Usage: sumibako publish <file.md> [--public]");
   }
 
-  const markdown = readMarkdown(file);
-  if (!markdown.trim()) die(`${file} is empty.`);
+  const source = readMarkdown(file);
+  if (!source.trim()) die(`${file} is empty.`);
+
+  // Before the page is written, so the page that arrives has its pictures.
+  const { markdown, notes } = await embedLocalFiles(
+    source,
+    file === "-" ? process.cwd() : path.dirname(path.resolve(file)),
+  );
 
   const key =
     typeof flags.key === "string"
@@ -800,7 +1185,7 @@ async function publish(positional, flags) {
     },
   });
 
-  report(result, { verb: result.created ? "Created" : "Updated" });
+  report(result, { verb: result.created ? "Created" : "Updated", notes });
 }
 
 /**
@@ -849,15 +1234,66 @@ async function append(positional, flags) {
     die("Nothing to add.", "Pass the text as an argument or pipe it in.");
   }
 
+  // Text typed here has no file of its own, so a path in it is relative to
+  // where the command was run.
+  const { markdown, notes } = await embedLocalFiles(text, process.cwd());
+
   const result = await callApi("PATCH", "/v1/pages", {
     body: {
       ...target,
-      [flags.prepend === true ? "prepend" : "append"]: text,
+      [flags.prepend === true ? "prepend" : "append"]: markdown,
     },
   });
   report(result, {
     verb: flags.prepend === true ? "Prepended to" : "Appended to",
+    notes,
   });
+}
+
+/**
+ * Adds files to a page that already exists.
+ *
+ * The other way a file reaches a page, for when there is no Markdown to embed
+ * it in: the page was written in the app, or the session that wrote it has
+ * ended, and somebody wants the PDF on it. Each file becomes a block of its
+ * own at the end of the page - a picture, a player, or a file to download.
+ *
+ * Any file may be named, of any type and from anywhere on the machine, which
+ * an embed may not. The difference is that here somebody typed its name.
+ *
+ * The first word is the page and the rest are files, except with --key, where
+ * the key is the page and every word is a file. Same rule as `append`.
+ */
+async function attach(positional, flags) {
+  const keyed = typeof flags.key === "string";
+  const usage =
+    "Usage: sumibako attach <file.md | page-id> <file...>, or attach --key <key> <file...>";
+  const target = targetFor(keyed ? undefined : positional[0], flags);
+  if (!target.documentId && !target.externalId) die("Which page?", usage);
+
+  const named = positional.slice(keyed ? 0 : 1);
+  if (named.length === 0) die("Which files?", usage);
+
+  const files = named.map((name) => {
+    if (!fs.existsSync(name)) die(`No such file: ${name}`);
+    if (fs.statSync(name).isDirectory()) {
+      die(`${name} is a directory. Name the files to attach.`);
+    }
+    return path.resolve(name);
+  });
+
+  const stored = await uploadFiles([...new Set(files)]);
+
+  const result = await callApi("PATCH", "/v1/pages", {
+    body: {
+      ...target,
+      // A blank line between them, so each is a block of its own.
+      [flags.prepend === true ? "prepend" : "append"]: files
+        .map((file) => stored.get(file).markdown)
+        .join("\n\n"),
+    },
+  });
+  report(result, { verb: "Attached to" });
 }
 
 /**
@@ -887,7 +1323,13 @@ async function edit(positional, flags) {
     );
   }
   // An empty --replace is a deletion, and has to survive the default below.
-  const replace = typeof flags.replace === "string" ? flags.replace : "";
+  // What is put in may embed a local file, which is how a picture is placed
+  // somewhere other than the end of a page.
+  const written = typeof flags.replace === "string" ? flags.replace : "";
+  const { markdown: replace, notes } =
+    find !== undefined
+      ? await embedLocalFiles(written, process.cwd())
+      : { markdown: written, notes: [] };
 
   const result = await callApi("PATCH", "/v1/pages", {
     body: {
@@ -897,7 +1339,7 @@ async function edit(positional, flags) {
       ...(icon !== undefined ? { icon } : {}),
     },
   });
-  report(result, { verb: "Edited" });
+  report(result, { verb: "Edited", notes });
 }
 
 async function unpublish(positional, flags) {
@@ -976,9 +1418,10 @@ const titled = (page) =>
   `${page.icon ? `${page.icon} ` : ""}${bold(page.title)}`;
 
 /** Prints the outcome of a write, link last so it is the easiest thing to copy. */
-function report(result, { verb }) {
+function report(result, { verb, notes = [] }) {
   console.log(`${green(verb)} ${titled(result)}`);
-  for (const warning of result.warnings ?? []) {
+  // What this command left alone first, then what the server changed.
+  for (const warning of [...notes, ...(result.warnings ?? [])]) {
     console.log(`${yellow("note")}   ${warning}`);
   }
   console.log(dim(result.url));
@@ -999,6 +1442,7 @@ ${bold("sumibako")} - file what your coding agent wrote into your vault
   ${bold("sumibako publish")} <file.md> [--public]  file a Markdown file as a page
   ${bold("sumibako unpublish")} <file.md>           take a published page off the web
   ${bold("sumibako append")} <file.md> <text>       add to the end of a page
+  ${bold("sumibako attach")} <file.md> <file...>    add images, PDFs and other files to a page
   ${bold("sumibako edit")} <file.md> --find ...     replace one piece of text
   ${bold("sumibako open")} <file.md> [--markdown]   print the links, or the page
   ${bold("sumibako search")} [words]                search your vault, or list it
@@ -1013,13 +1457,24 @@ ${bold("Options for publish")}
   --new               file a new page even if this file was filed before
   --parent <page-id>  nest it under an existing page
 
-${bold("Options for append and edit")}
+${bold("Options for append, attach and edit")}
   --prepend           add to the start of the page instead of the end
   --find <text>       the exact text to replace, as open --markdown prints it
   --replace <text>    what to put there; empty deletes the matched text
   --title <title>     rename the page
   --icon <emoji>      set the page's icon
   --key <key>         name the page by its key rather than a path or an id
+
+${bold("Images and files")}
+  A line like ![](./shot.png) in the Markdown you publish, append or put in
+  with edit is uploaded and shown on the page: images, video, audio and PDF,
+  from inside the repository the Markdown is in. Anything else is left as
+  written and the command says so.
+
+  attach adds files you name to a page that exists, of any type and from
+  anywhere: sumibako attach docs/plan.md report.pdf demo.mp4
+
+  A file already in the vault is not uploaded again, so re-running is cheap.
 
 ${bold("Editing a page you did not write")}
   open --markdown prints the page as Markdown, which is the same text --find
@@ -1068,6 +1523,8 @@ async function main() {
       return unpublish(positional, flags);
     case "append":
       return append(positional, flags);
+    case "attach":
+      return attach(positional, flags);
     case "edit":
       return edit(positional, flags);
     case "open":
@@ -1083,6 +1540,21 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  die(error instanceof Error ? error.message : String(error));
-});
+/*
+  Run, unless something imported this file to check a part of it.
+
+  `npm run verify` in the repository this ships from holds the embed scanner:
+  what it will take off a disk and what it leaves alone is the kind of rule
+  that is wrong silently. It sets this variable and imports the functions
+  below. The test is "is the variable set" rather than "was this file the
+  entry point", because the second has to be worked out from paths that
+  differ under npx, a symlinked bin and a Windows shim, and a wrong guess
+  there is a command that does nothing for everybody.
+*/
+if (!process.env.SUMIBAKO_AS_MODULE) {
+  main().catch((error) => {
+    die(error instanceof Error ? error.message : String(error));
+  });
+}
+
+export { findEmbeds, hostedEmbed, locateEmbed };

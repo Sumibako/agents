@@ -1,12 +1,12 @@
 ---
 name: sumibako
-description: File a plan, spec, ADR, handoff note or research report into the user's Sumibako vault and get back a link they can send to someone. Use when the user asks to save, file, publish or share a document you wrote, or asks for "a link to this", or says a teammate needs to read it. Also use to read, amend or take down a page already in the vault, and to search what is there before writing something new.
+description: File a plan, spec, ADR, handoff note or research report into the user's Sumibako vault and get back a link they can send to someone. Use when the user asks to save, file, publish or share a document you wrote, or asks for "a link to this", or says a teammate needs to read it. Also use to read, amend or take down a page already in the vault, to add an image, a PDF or another file to one, and to search what is there before writing something new.
 license: MIT
 compatibility: Requires Node 18+ and network access to sumibako.com
 allowed-tools: Bash(npx sumibako search:*) Bash(npx sumibako open:*) Bash(npx sumibako whoami)
 metadata:
   author: sumibako
-  version: "0.4.0"
+  version: "0.5.0"
   homepage: https://sumibako.com/agents
   repository: https://github.com/sumibako/agents
 ---
@@ -14,8 +14,9 @@ metadata:
 <!--
   `allowed-tools` covers the three commands that only read.
 
-  Deliberately not `publish`, `edit`, `append` or `unpublish`. Publishing puts a
-  document on the open web and the rest change what is in somebody's vault, and
+  Deliberately not `publish`, `edit`, `append`, `attach` or `unpublish`. Publishing
+  puts a document on the open web and the rest change what is in somebody's
+  vault, or send a file off their machine, and
   a skill that pre-approved those would be using this field to talk its way past
   the confirmation a person actually wants. Looking things up is the part where
   a prompt is pure friction, so that is the part this covers.
@@ -194,6 +195,61 @@ Only pass `--new` when the user genuinely wants a second, separate page - a new
 incident, a different feature. Reaching for it out of caution is how a vault
 fills up with eleven copies of one plan.
 
+## Pictures, recordings and files
+
+A page can show images, video and audio, and hold files to download. There are
+two ways to put one there, and both upload the file for you.
+
+**Embed it in the Markdown you file.** Give it a line to itself:
+
+```markdown
+![The login screen after the change](./screenshots/login.png)
+```
+
+`publish` uploads the file and the page shows it. The path is relative to the
+Markdown file. The same line works for a video (`![](./demo.mp4)`), an audio
+file, or a PDF (`![](./report.pdf)`). So when a document is about something
+you can show - a screenshot you took, a chart you rendered, a recording - save
+it beside the Markdown and embed it. Never paste image data into the document.
+
+**Attach it to a page that already exists:**
+
+```bash
+npx sumibako attach docs/plans/auth.md report.pdf demo.mp4
+```
+
+Each file is added at the end of the page. `attach` takes any type of file,
+from anywhere on the machine.
+
+To put a file somewhere other than the end, embed it in the text you `append`,
+or in the text you put in with `edit --replace`. There the path is relative to
+the directory you run the command in:
+
+```bash
+npx sumibako edit docs/plans/auth.md \
+  --find "## Results" \
+  --replace "## Results
+
+![](./results.png)"
+```
+
+Three things to know.
+
+- **An embed uploads media only, and only from inside the repository.** That
+  is images, video, audio and PDF, from the repository the Markdown is in. An
+  embed of anything else, or of a file outside it, is left as written, and the
+  command prints a `note` saying which and why. Read the notes: one usually
+  means a picture is missing from the page. If the user does want that file on
+  the page, use `attach` and name it.
+- **Running it again uploads nothing twice.** A file the vault already holds is
+  recognised and reused, so re-publishing after every revision stays cheap.
+  You will see `Already stored` where you saw `Uploaded`.
+- **A file has an address of its own.** Anyone holding that address can open
+  the file, whether or not its page is published. So the check you make before
+  `--public` applies to every file you upload, on a private page too: no
+  screenshot with a credential, a token or customer data in it. If you do not
+  know what a file shows, ask before you upload it.
+
 ## Changing a page instead of replacing it
 
 `publish` replaces the whole page, which is right when you still hold the file.
@@ -252,6 +308,9 @@ The document is rendered as a real page, so ordinary Markdown pays off:
   render properly. Tables are worth using for options and trade-offs.
 - Code fences keep their language and get syntax highlighting.
 - `> [!NOTE]` and `> [!WARNING]` become a bold label on the quote.
+- An image, video, audio file or PDF embedded on a line of its own, as
+  `![what it shows](./path)`, is uploaded and shown. Inside a sentence it
+  becomes a link instead.
 
 Two things degrade, and the command tells you when they do:
 
@@ -263,6 +322,8 @@ Two things degrade, and the command tells you when they do:
 
 - It cannot delete a page. The user does that in the app. `unpublish` takes the
   link off the web and leaves the writing alone.
+- It cannot delete a file it uploaded. Removing the embed from a page takes
+  the file off the page, not out of the vault.
 - It cannot make a page findable by search engines. Published pages carry
   `noindex`; the user turns that on themselves if they want it, per page.
 - It cannot read or write anyone else's vault.
@@ -277,9 +338,10 @@ Two things degrade, and the command tells you when they do:
 - `403` - publishing was refused. Either the token lacks the permission, and
   the user can create one that has it, or the account's email is not verified
   yet. The message says which; do not guess.
-- `409` - a limit is reached: the plan's pages, or the account's twenty tokens
-  while connecting. Report the message; it says which, and what to do. After a
-  `409` while connecting, the same command picks up once the user has revoked
-  a token. Do not start over.
+- `409` - a limit is reached: the plan's pages, its storage or its size for
+  one upload, or the account's twenty tokens while connecting. Report the
+  message; it says which, and what to do. When it is about a file, nothing was
+  uploaded and the page was not written. After a `409` while connecting, the
+  same command picks up once the user has revoked a token. Do not start over.
 - `413` - the document is too long. Split it.
 - `429` - too many requests. Wait the number of seconds it names.

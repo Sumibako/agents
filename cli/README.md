@@ -75,6 +75,7 @@ in the environment overrides everything, which is what CI should use.
 | `sumibako publish <file.md> --public` | And put it on the web, printing the link |
 | `sumibako unpublish <file.md>` | Take the page off the web |
 | `sumibako append <file.md> "text"` | Add to the end of a page |
+| `sumibako attach <file.md> <file...>` | Add images, PDFs and other files to a page |
 | `sumibako edit <file.md> --find ... --replace ...` | Replace one exact piece of text |
 | `sumibako open <file.md>` | Print the links for a page (`--markdown` for the page) |
 | `sumibako search [words]` | Search your vault, or list it with no words |
@@ -92,7 +93,7 @@ in the environment overrides everything, which is what CI should use.
 | `--new` | File a new page even if this file was filed before |
 | `--parent <page-id>` | Nest it under an existing page |
 
-### Options for `append` and `edit`
+### Options for `append`, `attach` and `edit`
 
 | Option | Meaning |
 | --- | --- |
@@ -122,6 +123,54 @@ finds out. Quote more of the surrounding lines.
 The page's previous version is kept for fourteen days either way, and **Version
 history** in the document menu puts it back.
 
+## Images and files
+
+A page can hold pictures, video, audio and files, and there are two ways to
+put one there.
+
+**Embed it in the Markdown.** A line like this, in a file you `publish` or in
+text you `append` or put in with `edit --replace`:
+
+```markdown
+![The login screen](./screenshots/login.png)
+```
+
+The file is uploaded and the page shows it. A path is relative to the Markdown
+file, or to where you ran the command when the text came from the command
+line. `![](./demo.mp4)` becomes a player and `![](./report.pdf)` a file to
+download, the same way.
+
+```
+Uploaded login.png (212 KB)
+Created Auth rewrite plan
+```
+
+An embed uploads images, video, audio and PDF, and only from inside the
+repository the Markdown is in (or its own folder, when it is in no
+repository). That is deliberate: an embed is acted on without anybody naming
+the file, and the Markdown may not be yours. Anything else is left exactly as
+written and the command says which, and why.
+
+**Attach it.** For a page that already exists, and for any file at all:
+
+```bash
+sumibako attach docs/plans/auth.md report.pdf demo.mp4
+sumibako attach --key docs/plans/auth.md ~/Downloads/budget.xlsx
+```
+
+Each file goes at the end of the page as a block of its own. A type the vault
+has no block for goes on as a link.
+
+**Nothing is uploaded twice.** A file your vault already holds is recognised
+by its contents and not sent again, so publishing a revised plan does not
+store its screenshots a second time.
+
+Files count against your plan's storage, exactly as an upload in the app does.
+One that does not fit is refused before anything is sent, and the page is not
+written. A stored file has an address anyone holding it can open, whether or
+not the page is published, so do not embed something you would not put in a
+link.
+
 ## Publishing the same file twice
 
 A file is filed under its path in the repository, so running `publish` again
@@ -136,8 +185,8 @@ identity yourself (useful when the file moves but the artifact does not).
 
 Headings, paragraphs, bold, italic, strikethrough, inline code, links, bullet
 lists, numbered lists, task lists, nested lists, blockquotes, GitHub alerts
-(`> [!NOTE]`), tables, fenced code with syntax highlighting, images on their own
-line, and horizontal rules.
+(`> [!NOTE]`), tables, fenced code with syntax highlighting, horizontal rules,
+and an image, video, audio clip or file embedded on a line of its own.
 
 Two things degrade, and the command says so when they do:
 
@@ -163,7 +212,7 @@ Claude.ai and ChatGPT cannot run this. They can reach an MCP server, so there is
 one at `https://sumibako.com/api/mcp` offering the same things as tools:
 `write_page`, `read_page`, `edit_page`, `search_pages`, `publish_page` and
 `get_account`. Add it as an MCP server and send the same token as an
-`Authorization: Bearer` header.
+`Authorization: Bearer` header. It writes text; sending a file needs this CLI.
 
 Prefer the CLI where a shell exists. An MCP tool call carries the whole document
 through the model's context to get there, so a 30KB plan costs 30KB of tokens;

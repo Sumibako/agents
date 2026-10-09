@@ -643,6 +643,46 @@ function parseFlags(argv) {
 }
 
 /**
+ * The banners a page's cover can be, for the help text.
+ *
+ * Not a check. The server holds the real list and refuses a name it does not
+ * know, with the names in the message, so a banner added there works from a
+ * copy of this file that has never heard of it. This is here so `help` can
+ * say what to type, and the repository this ships from holds it against the
+ * server's list.
+ */
+const COVERS = [
+  "brush",
+  "blue-hour",
+  "contours",
+  "flow",
+  "mist",
+  "sundown",
+  "garden",
+  "stars",
+  "enso",
+  "ridges",
+  "doodles",
+  "doodles-night",
+  "boxes",
+  "stitch",
+  "dawn",
+  "dusk",
+];
+
+/**
+ * What --cover was given. --banner is read too: it is what the files are
+ * called, and a flag this parser has never heard of is dropped without a
+ * word, so the page would be filed with a different banner and no reason.
+ */
+const coverFlag = (flags) =>
+  typeof flags.cover === "string"
+    ? flags.cover
+    : typeof flags.banner === "string"
+      ? flags.banner
+      : undefined;
+
+/**
  * The key a file is filed under, so re-running lands on one page.
  *
  * The repo-relative path, because that is the identity of an artifact that a
@@ -1180,6 +1220,9 @@ async function publish(positional, flags) {
       // One emoji. Also read from an `icon:` frontmatter line by the server,
       // which is the way to make it travel with the file; the flag wins.
       icon: typeof flags.icon === "string" ? flags.icon : undefined,
+      // A banner's name, or "none". The same two ways in as the icon: this
+      // flag, or a `cover:` line in the frontmatter, and the flag wins.
+      cover: coverFlag(flags),
       parentDocument: typeof flags.parent === "string" ? flags.parent : undefined,
       publish: wantsPublic ? true : undefined,
     },
@@ -1315,11 +1358,17 @@ async function edit(positional, flags) {
 
   const rename = typeof flags.title === "string" ? flags.title : undefined;
   const icon = typeof flags.icon === "string" ? flags.icon : undefined;
+  const cover = coverFlag(flags);
   const find = typeof flags.find === "string" ? flags.find : undefined;
-  if (find === undefined && rename === undefined && icon === undefined) {
+  if (
+    find === undefined &&
+    rename === undefined &&
+    icon === undefined &&
+    cover === undefined
+  ) {
     die(
       "Nothing to change.",
-      "Pass --find with --replace, --title to rename the page, or --icon to set its icon.",
+      "Pass --find with --replace, --title to rename the page, --icon to set its icon, or --cover to set its banner.",
     );
   }
   // An empty --replace is a deletion, and has to survive the default below.
@@ -1337,6 +1386,7 @@ async function edit(positional, flags) {
       ...(find !== undefined ? { find, replace } : {}),
       ...(rename !== undefined ? { title: rename } : {}),
       ...(icon !== undefined ? { icon } : {}),
+      ...(cover !== undefined ? { cover } : {}),
     },
   });
   report(result, { verb: "Edited", notes });
@@ -1453,6 +1503,7 @@ ${bold("Options for publish")}
   --public            publish it and print a shareable link
   --title <title>     override the title (default: the first heading)
   --icon <emoji>      the page's icon, one emoji (default: guessed from the title)
+  --cover <name>      the banner across the top (default: picked from the title)
   --key <key>         the identity of this artifact (default: its repo path)
   --new               file a new page even if this file was filed before
   --parent <page-id>  nest it under an existing page
@@ -1463,7 +1514,17 @@ ${bold("Options for append, attach and edit")}
   --replace <text>    what to put there; empty deletes the matched text
   --title <title>     rename the page
   --icon <emoji>      set the page's icon
+  --cover <name>      set the page's banner
   --key <key>         name the page by its key rather than a path or an id
+
+${bold("Covers")}
+  A new page gets a banner across its top, picked from its title. Name one
+  with --cover, or with a cover: line in the file's frontmatter:
+    ${COVERS.slice(0, 8).join(", ")},
+    ${COVERS.slice(8).join(", ")}
+  --cover none files a page without one. A page that exists keeps the cover
+  it has until you pass --cover, and a picture uploaded in the app is never
+  replaced from here.
 
 ${bold("Images and files")}
   A line like ![](./shot.png) in the Markdown you publish, append or put in
@@ -1557,4 +1618,4 @@ if (!process.env.SUMIBAKO_AS_MODULE) {
   });
 }
 
-export { findEmbeds, hostedEmbed, locateEmbed };
+export { COVERS, findEmbeds, hostedEmbed, locateEmbed };

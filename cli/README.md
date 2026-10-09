@@ -89,6 +89,7 @@ in the environment overrides everything, which is what CI should use.
 | `--public` | Publish it and print a shareable link |
 | `--title <title>` | Override the title, which otherwise comes from the first heading |
 | `--icon <emoji>` | The page's icon, one emoji; without it a new page gets one guessed from its title. An `icon:` line in the file's frontmatter does the same |
+| `--cover <name>` | The banner across the top of the page, by name, or `none`; without it a new page gets one picked from its title. A `cover:` line in the frontmatter does the same. `sumibako help` lists the names |
 | `--key <key>` | Set the artifact's identity yourself |
 | `--new` | File a new page even if this file was filed before |
 | `--parent <page-id>` | Nest it under an existing page |
@@ -102,6 +103,7 @@ in the environment overrides everything, which is what CI should use.
 | `--replace <text>` | What to put there; an empty string deletes the matched text |
 | `--title <title>` | Rename the page |
 | `--icon <emoji>` | Set the page's icon |
+| `--cover <name>` | Set the page's banner, or take it off with `none`. A picture uploaded in the app is never replaced |
 | `--key <key>` | Name the page by its key rather than by a path or an id |
 
 ## Changing a page without re-sending it

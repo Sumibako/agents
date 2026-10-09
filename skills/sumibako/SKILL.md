@@ -6,7 +6,7 @@ compatibility: Requires Node 18+ and network access to sumibako.com
 allowed-tools: Bash(npx sumibako search:*) Bash(npx sumibako open:*) Bash(npx sumibako whoami)
 metadata:
   author: sumibako
-  version: "0.5.0"
+  version: "0.6.0"
   homepage: https://sumibako.com/agents
   repository: https://github.com/sumibako/agents
 ---
@@ -147,6 +147,45 @@ If you send none, a new page gets one guessed from its title, and a page
 that already exists keeps whatever it has - which may be one the user chose
 by hand, so do not change it unless they asked.
 
+### Give it a cover
+
+A new page also gets a cover: a banner across its top, with the icon sitting
+on its edge. Choose one when you create a page, the way you choose the icon,
+so the two say the same thing about the document.
+
+| Cover | What it shows | Suits |
+| --- | --- | --- |
+| `contours` | a contour map on paper | a plan, a roadmap |
+| `stitch` | indigo cloth with white stitching | a spec, an architecture |
+| `enso` | an ink circle on paper | a decision |
+| `blue-hour` | blue mountains under a moon | a handoff |
+| `stars` | constellations on a night sky | research |
+| `mist` | grey ridges in mist | an investigation |
+| `boxes` | white cubes, a few in black and amber | a checklist, a migration |
+| `sundown` | amber ridges at sunset | an incident |
+| `garden` | a raked sand garden with stones | a cleanup, a post-mortem |
+| `ridges` | white ridgelines on black | benchmarks, metrics |
+| `flow` | dark flowing lines with amber threads | a pipeline, a data flow |
+| `brush` | one ink brush stroke on paper | a draft, notes |
+| `doodles` | small doodles on paper | a brainstorm |
+| `doodles-night` | the same doodles on black | a brainstorm that ran late |
+| `dawn` | a soft gradient, sky blue to peach | a proposal, a kickoff |
+| `dusk` | a deep gradient, blue to violet and red | a summary, a retro |
+
+```bash
+npx sumibako publish docs/plans/auth-rewrite.md --icon 🗺️ --cover contours
+```
+
+Or put `cover: contours` in the frontmatter beside `icon:`, so it travels
+with the file.
+
+If you send none, a new page gets one picked from its title. A page that
+already exists keeps the cover it has, and keeps having none if it has none:
+the user may have chosen it, or taken it off. So pass `--cover` on an update
+only when they ask. A cover that is a picture the user uploaded is never
+replaced; the command prints a `note` and leaves it. `--cover none` files a
+page without one, for a user who has said they want their pages plain.
+
 ### Before you pass `--public`
 
 `--public` puts the document on the open web. Anyone with the link can read it
@@ -271,9 +310,10 @@ npx sumibako edit docs/plans/auth.md \
   --find "We will ship this in Q3." \
   --replace "We will ship this in Q4, after the migration."
 
-# rename, or change the icon
+# rename, or change the icon or the cover
 npx sumibako edit docs/plans/auth.md --title "Auth rewrite, revised"
 npx sumibako edit docs/plans/auth.md --icon 🧭
+npx sumibako edit docs/plans/auth.md --cover stars
 ```
 
 **`--find` must match exactly once.** It is matched against the Markdown that
@@ -302,8 +342,8 @@ The document is rendered as a real page, so ordinary Markdown pays off:
 
 - **The first heading becomes the page title.** Start with one `#` line saying
   what the document is. Or put `title:` in YAML frontmatter, with `icon:`
-  beside it. With neither, a new page is called "Untitled", and an update
-  leaves the page's title as it was.
+  and `cover:` beside it. With neither, a new page is called "Untitled", and
+  an update leaves the page's title as it was.
 - Headings, lists, task lists, tables, blockquotes, links and fenced code all
   render properly. Tables are worth using for options and trade-offs.
 - Code fences keep their language and get syntax highlighting.

@@ -6,7 +6,7 @@ compatibility: Requires Node 18+ and network access to sumibako.com
 allowed-tools: Bash(npx sumibako search:*) Bash(npx sumibako open:*) Bash(npx sumibako whoami)
 metadata:
   author: sumibako
-  version: "0.6.0"
+  version: "0.7.0"
   homepage: https://sumibako.com/agents
   repository: https://github.com/sumibako/agents
 ---
@@ -119,6 +119,31 @@ npx sumibako publish docs/plans/auth-rewrite.md --public
 The command prints the page's link, and the public link when there is one.
 Give the user the public link verbatim. Do not paraphrase or shorten it.
 
+### Sharing it with only some people
+
+When the user wants a link that not everyone can open - "share it with the
+team, not publicly", "put a password on it", "only for the client" - use
+`--passcode` instead of `--public`:
+
+```bash
+npx sumibako publish docs/plans/auth-rewrite.md --passcode
+```
+
+The command prints the link and, under it, a six-character passcode such as
+`K7M-4QX`. The link alone opens a lock screen that shows nothing of the page,
+not even its title. Give the user **both, verbatim**, and suggest sending the
+passcode separately from the link - another message, another channel.
+
+- **Publishing again keeps the passcode.** Re-run `publish` after every
+  revision as usual, with or without `--public`; the lock and the link stay.
+- **Only `--anyone` takes it off.** Pass it only when the user asks for the
+  page to be open to everyone who has the link.
+- **`--new-passcode` replaces it**, for when the user thinks it has leaked.
+  Everyone holding the old one is locked out, so tell them that.
+- **Lost it?** `npx sumibako open <file.md>` prints it again.
+
+A passcode is not a list of people: whoever the user forwards it to gets in.
+
 ### Give it an icon
 
 Every page gets an icon: one emoji, shown beside the title in the sidebar and
@@ -190,7 +215,8 @@ page without one, for a user who has said they want their pages plain.
 
 `--public` puts the document on the open web. Anyone with the link can read it
 without signing in. It is not indexed by search engines, and that is the only
-protection it has.
+protection it has. `--passcode` adds a second one, but the page is still on the
+web for whoever has both, so the check below applies to it just the same.
 
 So do two things first, both briefly:
 
@@ -331,7 +357,7 @@ It sends one line instead of the whole document and cannot disturb the rest.
 ```bash
 npx sumibako search "auth rewrite"       # what is already written down
 npx sumibako search                      # or list the newest pages
-npx sumibako open docs/plans/auth.md     # the links for a page
+npx sumibako open docs/plans/auth.md     # the links for a page, and its passcode
 npx sumibako open docs/plans/auth.md --markdown   # and the page itself
 npx sumibako unpublish docs/plans/auth.md     # take the link off the web
 ```
@@ -366,6 +392,8 @@ Two things degrade, and the command tells you when they do:
   the file off the page, not out of the vault.
 - It cannot make a page findable by search engines. Published pages carry
   `noindex`; the user turns that on themselves if they want it, per page.
+- It cannot limit a page to named people. A passcode opens the page for
+  whoever has it.
 - It cannot read or write anyone else's vault.
 
 ## Errors worth reading

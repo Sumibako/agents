@@ -73,6 +73,7 @@ in the environment overrides everything, which is what CI should use.
 | `sumibako login` | Connect this machine, waiting for you to approve it |
 | `sumibako publish <file.md>` | File a Markdown file as a page |
 | `sumibako publish <file.md> --public` | And put it on the web, printing the link |
+| `sumibako publish <file.md> --passcode` | Put it on the web behind a passcode, printed with the link |
 | `sumibako unpublish <file.md>` | Take the page off the web |
 | `sumibako append <file.md> "text"` | Add to the end of a page |
 | `sumibako attach <file.md> <file...>` | Add images, PDFs and other files to a page |
@@ -87,6 +88,9 @@ in the environment overrides everything, which is what CI should use.
 | Option | Meaning |
 | --- | --- |
 | `--public` | Publish it and print a shareable link |
+| `--passcode` | Publish it behind a six-character passcode, printed under the link |
+| `--new-passcode` | Replace the passcode; the old one stops opening the page |
+| `--anyone` | Let anyone with the link open it, taking a passcode off |
 | `--title <title>` | Override the title, which otherwise comes from the first heading |
 | `--icon <emoji>` | The page's icon, one emoji; without it a new page gets one guessed from its title. An `icon:` line in the file's frontmatter does the same |
 | `--cover <name>` | The banner across the top of the page, by name, or `none`; without it a new page gets one picked from its title. A `cover:` line in the frontmatter does the same. `sumibako help` lists the names |
@@ -201,6 +205,16 @@ Pages are private until you pass `--public`. A published page has a link anyone
 can open, and carries `noindex` so search engines do not list it. Making a page
 findable in search is a separate opt-in that only you can give, per page, in the
 app - a token cannot do it.
+
+`--passcode` puts a lock in front of the link. Whoever opens it sees a lock
+screen and nothing of the page - not even its title - until they type the six
+characters printed under the link, and a browser that has typed them stays
+unlocked for 30 days. Send the passcode separately from the link when you can.
+`--new-passcode` replaces it, which locks out everyone holding the old one.
+
+Publishing again keeps the passcode, with or without `--public`, so an agent
+re-filing a plan cannot quietly take the lock off. Only `--anyone` does that.
+`sumibako open <file.md>` prints the passcode again whenever it is needed.
 
 ## For agents
 

@@ -598,14 +598,17 @@ async function ensureToken(base) {
 /**
  * Flags that never take a value.
  *
- * Without this list `--public plan.md` read the file name as the flag's value
- * and then asked "Which file?", because nothing distinguishes a switch from an
- * option that happens to be followed by a word. An agent puts flags wherever
- * it likes, so these never swallow the argument after them.
+ * Without this list `--passcode plan.md` read the file name as the flag's
+ * value and then asked "Which file?", because nothing distinguishes a switch
+ * from an option that happens to be followed by a word. An agent puts flags
+ * wherever it likes, so these never swallow the argument after them.
  */
 const SWITCHES = new Set([
   "public",
   "publish",
+  "passcode",
+  "anyone",
+  "new-passcode",
   "new",
   "prepend",
   "markdown",
@@ -1188,10 +1191,36 @@ function logout() {
   console.log(dim("Revoke it in Settings if it may have leaked."));
 }
 
+/**
+ * Who may open the link, from the flags, or undefined to keep what it has.
+ *
+ * `--public` alone does not choose. A page its owner put behind a passcode
+ * stays behind it when it is published again, which is the whole reason the
+ * skill can tell agents to re-run `publish --public` after every revision.
+ * Opening a locked page to everyone takes `--anyone`, said out loud.
+ */
+function accessFromFlags(flags) {
+  if (flags.passcode === true && flags.anyone === true) {
+    die(
+      "--passcode and --anyone contradict each other.",
+      "Pass --passcode to require one, or --anyone to let anyone with the link open it.",
+    );
+  }
+  if (flags["new-passcode"] === true && flags.anyone === true) {
+    die("--new-passcode only makes sense for a page behind a passcode.");
+  }
+  if (flags.passcode === true || flags["new-passcode"] === true) return "passcode";
+  if (flags.anyone === true) return "anyone";
+  return undefined;
+}
+
 async function publish(positional, flags) {
   const file = positional[0];
   if (!file) {
-    die("Which file?", "Usage: sumibako publish <file.md> [--public]");
+    die(
+      "Which file?",
+      "Usage: sumibako publish <file.md> [--public | --passcode]",
+    );
   }
 
   const source = readMarkdown(file);
@@ -1210,7 +1239,10 @@ async function publish(positional, flags) {
         ? undefined
         : defaultKey(file);
 
-  const wantsPublic = flags.public === true || flags.publish === true;
+  const access = accessFromFlags(flags);
+  // A level is a way of being on the web, so choosing one publishes.
+  const wantsPublic =
+    flags.public === true || flags.publish === true || access !== undefined;
 
   const result = await callApi("POST", "/v1/pages", {
     body: {
@@ -1225,10 +1257,26 @@ async function publish(positional, flags) {
       cover: coverFlag(flags),
       parentDocument: typeof flags.parent === "string" ? flags.parent : undefined,
       publish: wantsPublic ? true : undefined,
+      access,
+      newPasscode: flags["new-passcode"] === true ? true : undefined,
     },
   });
 
   report(result, { verb: result.created ? "Created" : "Updated", notes });
+
+  // Said once, when it matters: somebody asked for "public" and the page
+  // kept the lock its owner put on it.
+  if (
+    access === undefined &&
+    wantsPublic &&
+    result.access === "passcode"
+  ) {
+    console.log(
+      dim(
+        "It stays behind its passcode. Pass --anyone to let anyone with the link open it.",
+      ),
+    );
+  }
 }
 
 /**
@@ -1417,6 +1465,9 @@ async function open(positional, flags) {
   console.log(titled(page));
   console.log(page.url);
   if (page.publicUrl) console.log(green(page.publicUrl));
+  if (page.publicUrl && page.passcode) {
+    console.log(`${bold("Passcode:")} ${page.passcode}`);
+  }
 
   // Two names for one thing. `--text` came first and is in people's scripts;
   // Markdown is strictly the better answer, because it is what you edit and
@@ -1446,7 +1497,10 @@ async function search(positional) {
     return;
   }
   for (const page of results) {
-    console.log(`${titled(page)}${page.publicUrl ? green("  public") : ""}`);
+    const marker = page.publicUrl
+      ? green(page.access === "passcode" ? "  passcode" : "  public")
+      : "";
+    console.log(`${titled(page)}${marker}`);
     console.log(dim(`  ${page.publicUrl ?? page.url}`));
   }
 }
@@ -1478,6 +1532,14 @@ function report(result, { verb, notes = [] }) {
   if (result.publicUrl) {
     console.log();
     console.log(`${bold("Share this:")} ${result.publicUrl}`);
+    // The link opens a lock screen without this, so it is printed right under
+    // it, in the same form a person types it.
+    if (result.passcode) {
+      console.log(`${bold("Passcode:")}   ${result.passcode}`);
+      console.log(
+        dim("Send the passcode separately from the link. It opens nothing without it."),
+      );
+    }
   }
 }
 
@@ -1501,6 +1563,9 @@ ${bold("sumibako")} - file what your coding agent wrote into your vault
 
 ${bold("Options for publish")}
   --public            publish it and print a shareable link
+  --passcode          publish it behind a passcode, printed with the link
+  --new-passcode      replace the passcode; the old one stops working
+  --anyone            let anyone with the link open it, removing a passcode
   --title <title>     override the title (default: the first heading)
   --icon <emoji>      the page's icon, one emoji (default: guessed from the title)
   --cover <name>      the banner across the top (default: picked from the title)
@@ -1546,6 +1611,12 @@ ${bold("How re-running works")}
   A file is filed under its path in the repo, so publishing the same file again
   updates the same page instead of making a second one. Pass --new when you
   genuinely want another page, or --key to choose the identity yourself.
+
+${bold("Passcodes")}
+  --passcode puts the page behind six characters, printed under the link. The
+  link alone opens a lock screen. Publishing again, with or without --public,
+  keeps the passcode and the link; only --anyone takes it off. open prints the
+  passcode again whenever it is needed.
 
 ${bold("Connecting")}
   Any command will start it: with no token, it prints a link to open and exits

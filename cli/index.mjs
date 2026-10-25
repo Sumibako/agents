@@ -175,28 +175,61 @@ function resolveApi() {
  * the call: an unreachable host, and a server that answered but not as this
  * API. Everything else is handed back for the caller to interpret.
  */
+const RETRY_ATTEMPTS = 3;
+const RETRY_TIMEOUT_MS = 12_000;
+
 async function rawCall(
   method,
   base,
   endpoint,
-  { body, query, token, tolerateNetworkError = false } = {},
+  { body, query, token, tolerateNetworkError = false, retry = false } = {},
 ) {
   const url = new URL(base + endpoint);
   for (const [key, value] of Object.entries(query ?? {})) {
     if (value !== undefined && value !== null) url.searchParams.set(key, String(value));
   }
 
+  /*
+    A call that is safe to say twice is given a clock and three tries.
+
+    The web front door in front of this API sometimes accepts a connection and
+    then says nothing for ten to twenty seconds before resetting it (measured
+    2026-10-25: about one request in twenty-five, static files included, while
+    the backend itself never stalled). A fresh connection a moment later answers
+    at once, so waiting out the stall is the wrong move and trying again is the
+    right one. Only a call that is idempotent asks for this: a read, a page
+    filed under its key, a file recorded by its hash. `append` and `edit` do
+    not, because a request that was delivered and whose answer was lost would be
+    applied twice, so they keep one try and no clock.
+  */
+  const attempts = retry ? RETRY_ATTEMPTS : 1;
   let response;
-  try {
-    response = await fetch(url, {
-      method,
-      headers: {
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...(body ? { "Content-Type": "application/json" } : {}),
-      },
-      body: body ? JSON.stringify(body) : undefined,
-    });
-  } catch (error) {
+  let failure = null;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    // The clock covers the wait for an answer to start and is put away once
+    // one has, so reading a long reply is never cut short.
+    const stop = retry ? new AbortController() : null;
+    const timer = stop ? setTimeout(() => stop.abort(), RETRY_TIMEOUT_MS) : null;
+    try {
+      response = await fetch(url, {
+        method,
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(body ? { "Content-Type": "application/json" } : {}),
+        },
+        body: body ? JSON.stringify(body) : undefined,
+        signal: stop?.signal,
+      });
+      failure = null;
+      break;
+    } catch (error) {
+      failure = error;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+  if (failure) {
+    const error = failure;
     /*
       A dropped connection, not a refusal.
 
@@ -246,7 +279,7 @@ async function rawCall(
   return { response, payload, text };
 }
 
-async function callApi(method, endpoint, { body, token, query, api } = {}) {
+async function callApi(method, endpoint, { body, token, query, api, retry } = {}) {
   const base = api ?? resolveApi();
 
   /*
@@ -263,6 +296,7 @@ async function callApi(method, endpoint, { body, token, query, api } = {}) {
     body,
     query,
     token: authToken,
+    retry,
   });
 
   if (!response.ok) {
@@ -1021,6 +1055,7 @@ async function uploadFiles(paths) {
     const batch = entries.slice(at, at + FILES_PER_REQUEST);
 
     const asked = await callApi("POST", "/v1/files/upload", {
+      retry: true,
       body: {
         files: batch.map(({ name, size, sha256 }) => ({ name, size, sha256 })),
       },
@@ -1045,6 +1080,7 @@ async function uploadFiles(paths) {
     if (sent.length === 0) continue;
 
     const kept = await callApi("POST", "/v1/files", {
+      retry: true,
       body: {
         files: sent.map(({ entry, storageId }) => ({
           storageId,
@@ -1142,7 +1178,7 @@ async function login(flags) {
   // fails here rather than halfway through the next session, and a failed
   // login leaves whatever was configured before it untouched.
   if (token) {
-    const who = await callApi("GET", "/v1/whoami", { token, api });
+    const who = await callApi("GET", "/v1/whoami", { token, api, retry: true });
     const config = readConfig();
     delete config.pending;
     writeConfig({ ...config, token, ...(api ? { api } : {}) });
@@ -1245,6 +1281,7 @@ async function publish(positional, flags) {
     flags.public === true || flags.publish === true || access !== undefined;
 
   const result = await callApi("POST", "/v1/pages", {
+    retry: true,
     body: {
       markdown,
       externalId: key,
@@ -1447,6 +1484,7 @@ async function unpublish(positional, flags) {
   }
 
   const result = await callApi("POST", "/v1/pages/publish", {
+    retry: true,
     body: { ...target, publish: false },
   });
   console.log(`${green("Taken down.")} ${titled(result)} is private again.`);
@@ -1460,6 +1498,7 @@ async function open(positional, flags) {
   }
 
   const page = await callApi("GET", "/v1/pages", {
+    retry: true,
     query: { id: target.documentId, externalId: target.externalId },
   });
   console.log(titled(page));
@@ -1489,6 +1528,7 @@ async function search(positional) {
   const term = positional.join(" ").trim();
 
   const { results } = await callApi("GET", "/v1/pages/search", {
+    retry: true,
     query: { q: term || undefined, limit: term ? undefined : 20 },
   });
 
@@ -1506,8 +1546,8 @@ async function search(positional) {
 }
 
 async function whoami() {
-  const who = await callApi("GET", "/v1/whoami");
-  const usage = await callApi("GET", "/v1/usage");
+  const who = await callApi("GET", "/v1/whoami", { retry: true });
+  const usage = await callApi("GET", "/v1/usage", { retry: true });
   console.log(`Plan ${bold(who.plan)} at ${who.site}`);
   console.log(`Permissions: ${who.scopes.join(", ")}`);
   console.log(

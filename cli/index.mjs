@@ -16,7 +16,7 @@
  * changes with the spec. An MCP server can come later and reuse this same API.
  */
 
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -750,6 +750,64 @@ function gitRoot(start) {
   return null;
 }
 
+/**
+ * The project a file belongs to: its repository's `owner/name`, or the
+ * repository's folder name when it has no remote. Null outside a repository.
+ *
+ * Sent with every write and every lookup by key, because a key is a path
+ * inside a repository and two repositories both have a `docs/plan.md`: the
+ * server keeps one page per path per project, and files each project's pages
+ * in a folder of their own. The remote rather than the folder, because the
+ * same repository is cloned into differently named folders, worktrees among
+ * them, and is still the same project.
+ */
+function projectOf(filePath) {
+  const root = gitRoot(path.resolve(filePath));
+  if (!root) return null;
+  let remote = "";
+  try {
+    remote = execFileSync("git", ["-C", root, "config", "--get", "remote.origin.url"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 3000,
+    }).trim();
+  } catch {
+    // No remote, or no git on the PATH. The folder still names the project.
+  }
+  return projectFromRemote(remote) ?? path.basename(root);
+}
+
+/**
+ * `owner/name` out of a remote's address, or null when there is none to read.
+ *
+ * Every form git takes: `https://github.com/acme/app.git`,
+ * `git@github.com:acme/app.git`, `ssh://git@host:22/acme/app`, and a GitLab
+ * subgroup or an Azure `_git` path, where the last two segments that name
+ * something are the ones a person would call it by.
+ */
+function projectFromRemote(remote) {
+  const address = (remote ?? "").trim();
+  if (!address) return null;
+  const pathPart = address
+    .replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]*\/?/i, "")
+    .replace(/^[^@/]+@[^:/]+:/, "")
+    .replace(/\.git\/?$/i, "")
+    .replace(/\/+$/, "");
+  const segments = pathPart
+    .split(/[\\/]/)
+    .filter((segment) => segment && segment !== "_git" && segment !== "~");
+  if (segments.length === 0) return null;
+  return segments.slice(-2).join("/");
+}
+
+/** The project a command's target is in: the flag, else the file's repository. */
+function projectFor(flags, filePath) {
+  if (typeof flags.project === "string" && flags.project.trim()) {
+    return flags.project.trim();
+  }
+  return projectOf(filePath) ?? undefined;
+}
+
 function readMarkdown(filePath) {
   if (filePath === "-") {
     return fs.readFileSync(0, "utf8");
@@ -1285,6 +1343,9 @@ async function publish(positional, flags) {
     body: {
       markdown,
       externalId: key,
+      // Where the page is filed and what its key is unique within. Sent for a
+      // page with no key too, so it still lands in its project's folder.
+      project: projectFor(flags, file === "-" ? process.cwd() : file),
       title: typeof flags.title === "string" ? flags.title : undefined,
       // One emoji. Also read from an `icon:` frontmatter line by the server,
       // which is the way to make it travel with the file; the flag wins.
@@ -1320,13 +1381,28 @@ async function publish(positional, flags) {
  * Works out whether an argument names a file on disk or a page id.
  *
  * A file that exists is keyed by its repo path, the same way `publish` filed
- * it. Anything else is taken to be a page id, which is what someone pastes
- * after copying it out of a URL.
+ * it, within the same project. Anything else is taken to be a page id, which
+ * is what someone pastes after copying it out of a URL.
+ *
+ * A key given with --key is looked up in the project --project names, and in
+ * none otherwise, rather than in the repository the command happens to be run
+ * from: the server then finds the page wherever it was filed, and asks for
+ * --project only when two projects hold the same key.
  */
 function targetFor(argument, flags) {
-  if (typeof flags.key === "string") return { externalId: flags.key };
+  if (typeof flags.key === "string") {
+    return {
+      externalId: flags.key,
+      project: typeof flags.project === "string" ? flags.project : undefined,
+    };
+  }
   if (!argument) return {};
-  if (fs.existsSync(argument)) return { externalId: defaultKey(argument) };
+  if (fs.existsSync(argument)) {
+    return {
+      externalId: defaultKey(argument),
+      project: projectFor(flags, argument),
+    };
+  }
   return { documentId: argument };
 }
 
@@ -1499,7 +1575,11 @@ async function open(positional, flags) {
 
   const page = await callApi("GET", "/v1/pages", {
     retry: true,
-    query: { id: target.documentId, externalId: target.externalId },
+    query: {
+      id: target.documentId,
+      externalId: target.externalId,
+      project: target.project,
+    },
   });
   console.log(titled(page));
   console.log(page.url);
@@ -1610,6 +1690,7 @@ ${bold("Options for publish")}
   --icon <emoji>      the page's icon, one emoji (default: guessed from the title)
   --cover <name>      the banner across the top (default: picked from the title)
   --key <key>         the identity of this artifact (default: its repo path)
+  --project <name>    the project it belongs to (default: the repository)
   --new               file a new page even if this file was filed before
   --parent <page-id>  nest it under an existing page
 
@@ -1621,6 +1702,12 @@ ${bold("Options for append, attach and edit")}
   --icon <emoji>      set the page's icon
   --cover <name>      set the page's banner
   --key <key>         name the page by its key rather than a path or an id
+  --project <name>    the project the key is filed under (default: the repository)
+
+${bold("Projects")}
+  Pages are filed by project: the repository a file is in, by its remote's
+  owner/name. Each project's pages go in a folder of their own under Agent
+  notes, and the same path in two repositories is two pages.
 
 ${bold("Covers")}
   A new page gets a banner across its top, picked from its title. Name one
@@ -1729,4 +1816,4 @@ if (!process.env.SUMIBAKO_AS_MODULE) {
   });
 }
 
-export { COVERS, findEmbeds, hostedEmbed, locateEmbed };
+export { COVERS, findEmbeds, hostedEmbed, locateEmbed, projectFromRemote };

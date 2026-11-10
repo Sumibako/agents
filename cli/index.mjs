@@ -705,6 +705,18 @@ const COVERS = [
   "stitch",
   "dawn",
   "dusk",
+  "waves",
+  "blueprint",
+  "ripples",
+  "code",
+  "halftone",
+  "aurora",
+  "maze",
+  "circuit",
+  "weave",
+  "eclipse",
+  "bloom",
+  "fireflies",
 ];
 
 /**

@@ -196,6 +196,18 @@ so the two say the same thing about the document.
 | `doodles-night` | the same doodles on black | a brainstorm that ran late |
 | `dawn` | a soft gradient, sky blue to peach | a proposal, a kickoff |
 | `dusk` | a deep gradient, blue to violet and red | a summary, a retro |
+| `waves` | overlapping wave arcs on paper | a changelog, release notes |
+| `blueprint` | a box drawn on blueprint paper | a design doc, a schema |
+| `ripples` | rings spreading on still water | an impact analysis |
+| `code` | abstract lines of code on black | a code review, a refactor |
+| `halftone` | a halftone sea of ink dots under an amber sun | a launch, an announcement |
+| `aurora` | green and violet light over dark hills | a vision, a long-term idea |
+| `maze` | an ink maze with one amber path | a debugging session, a root cause |
+| `circuit` | a chip and circuit traces on black | an integration, infrastructure |
+| `weave` | woven paper strips, one amber, one ink | a merge, a dependency map |
+| `eclipse` | an amber corona around a black sun | an outage, a blocker |
+| `bloom` | ink spreading in water | an exploration, a spike |
+| `fireflies` | amber fireflies over dark trees | a reading list, ideas to keep |
 
 ```bash
 npx sumibako publish docs/plans/auth-rewrite.md --icon 🗺️ --cover contours

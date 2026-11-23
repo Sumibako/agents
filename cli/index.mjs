@@ -216,6 +216,9 @@ async function rawCall(
         headers: {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
           ...(body ? { "Content-Type": "application/json" } : {}),
+          // Which agent is running this, for the badge on the page it writes
+          // and the vault's usage counts. Nothing when none can be told.
+          ...(runningAgent ? { "Sumibako-Agent": runningAgent } : {}),
         },
         body: body ? JSON.stringify(body) : undefined,
         signal: stop?.signal,
@@ -626,6 +629,55 @@ async function ensureToken(base) {
 }
 
 // ---------------------------------------------------------------------------
+// Which agent is running this
+// ---------------------------------------------------------------------------
+
+/**
+ * The coding agent running this command, as a name the server knows, or
+ * undefined when nothing says.
+ *
+ * Sent with every request so the page shows a badge for the agent that wrote
+ * it (inside the owner's vault only, never on a published page). The server
+ * turns the name into one of its own ids and calls anything it does not know
+ * "Other agent", so a name here only has to be recognisable, not exact.
+ *
+ * In order, first answer wins:
+ *   --agent <name>      what the agent says it is; the skill asks for it
+ *   SUMIBAKO_AGENT      the same, for a wrapper or a CI job
+ *   AI_AGENT            the cross-vendor variable (agents.md issue #136);
+ *                       Claude Code sets claude-code_<version>_agent, and
+ *                       0, false, no or off mean "not an agent"
+ *   CLAUDECODE=1        Claude Code
+ *   CODEX_CI, CODEX_THREAD_ID, CODEX_SESSION_ID   Codex (its exec env)
+ *   CURSOR_AGENT        Cursor's agent terminal and cursor-agent
+ *   GEMINI_CLI          Gemini CLI
+ *   COPILOT_AGENT, COPILOT_CLI   GitHub Copilot
+ *   GITHUB_ACTIONS=true a workflow with no agent in it
+ *
+ * Collected on 2026-11-22 from each tool's own source or documentation.
+ * Cursor's editor also sets CURSOR_TRACE_ID in a terminal a person types
+ * into, which is why that one is not read: a person is not an agent.
+ */
+function detectAgent(env, flag) {
+  const said = (value) =>
+    typeof value === "string" && value.trim() ? value.trim() : undefined;
+  if (said(flag)) return said(flag);
+  if (said(env.SUMIBAKO_AGENT)) return said(env.SUMIBAKO_AGENT);
+  const aiAgent = said(env.AI_AGENT);
+  if (aiAgent && !/^(0|false|no|off)$/i.test(aiAgent)) return aiAgent;
+  if (env.CLAUDECODE === "1") return "claude-code";
+  if (env.CODEX_CI || env.CODEX_THREAD_ID || env.CODEX_SESSION_ID) return "codex";
+  if (said(env.CURSOR_AGENT)) return "cursor";
+  if (said(env.GEMINI_CLI)) return "gemini";
+  if (said(env.COPILOT_AGENT) || said(env.COPILOT_CLI)) return "copilot";
+  if (env.GITHUB_ACTIONS === "true") return "github-actions";
+  return undefined;
+}
+
+/** Set once in `main`, read by every request. */
+let runningAgent;
+
+// ---------------------------------------------------------------------------
 // Arguments
 // ---------------------------------------------------------------------------
 
@@ -638,6 +690,9 @@ async function ensureToken(base) {
  * wherever it likes, so these never swallow the argument after them.
  */
 const SWITCHES = new Set([
+  "yes",
+  "undo",
+  "dry-run",
   "public",
   "publish",
   "passcode",
@@ -1320,6 +1375,30 @@ function accessFromFlags(flags) {
   return undefined;
 }
 
+/**
+ * How long the link should last, from `--expires`, or undefined to keep what
+ * it has. Checked here so a typo is refused before anything is sent, with
+ * the three answers the server takes.
+ */
+function expiresFromFlags(flags) {
+  if (flags.expires === undefined) return undefined;
+  const value = typeof flags.expires === "string" ? flags.expires.trim().toLowerCase() : "";
+  if (value === "7d" || value === "30d" || value === "never") return value;
+  die(
+    "--expires takes 7d, 30d or never.",
+    "Example: sumibako publish docs/plan.md --public --expires 7d",
+  );
+}
+
+/** "Mon 30 Nov 2026" from a time the API sent, for the line under a link. */
+const dayOf = (at) =>
+  new Date(at).toLocaleDateString("en-GB", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+
 async function publish(positional, flags) {
   const file = positional[0];
   if (!file) {
@@ -1346,9 +1425,14 @@ async function publish(positional, flags) {
         : defaultKey(file);
 
   const access = accessFromFlags(flags);
-  // A level is a way of being on the web, so choosing one publishes.
+  const expires = expiresFromFlags(flags);
+  // A level is a way of being on the web, and so is an expiry, so choosing
+  // either publishes.
   const wantsPublic =
-    flags.public === true || flags.publish === true || access !== undefined;
+    flags.public === true ||
+    flags.publish === true ||
+    access !== undefined ||
+    expires !== undefined;
 
   const result = await callApi("POST", "/v1/pages", {
     retry: true,
@@ -1369,6 +1453,7 @@ async function publish(positional, flags) {
       publish: wantsPublic ? true : undefined,
       access,
       newPasscode: flags["new-passcode"] === true ? true : undefined,
+      expires,
     },
   });
 
@@ -1599,6 +1684,12 @@ async function open(positional, flags) {
   if (page.publicUrl && page.passcode) {
     console.log(`${bold("Passcode:")} ${page.passcode}`);
   }
+  if (page.publicUrl && page.expiresAt) {
+    console.log(`${bold("Expires:")}  ${dayOf(page.expiresAt)}`);
+  }
+  if (!page.publicUrl && page.expiredAt) {
+    console.log(dim(`The link expired on ${dayOf(page.expiredAt)}. The page is private.`));
+  }
 
   // Two names for one thing. `--text` came first and is in people's scripts;
   // Markdown is strictly the better answer, because it is what you edit and
@@ -1668,10 +1759,990 @@ function report(result, { verb, notes = [] }) {
     // it, in the same form a person types it.
     if (result.passcode) {
       console.log(`${bold("Passcode:")}   ${result.passcode}`);
+    }
+    // The day the link stops working, which the person sending it should
+    // know before they send it.
+    if (result.expiresAt) {
+      console.log(`${bold("Expires:")}    ${dayOf(result.expiresAt)}`);
+    }
+    if (result.passcode) {
       console.log(
         dim("Send the passcode separately from the link. It opens nothing without it."),
       );
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// init: setting up the coding agents on this machine
+// ---------------------------------------------------------------------------
+
+/*
+  `sumibako init` finds Claude Code, Codex and Cursor on this machine and, with
+  a yes for each, gives every one the skill, the MCP server and, for the two
+  that can run a hook, one that files a plan into the vault, privately, as
+  soon as it is made (Epic 4 of the direction plan in the repository this
+  ships from). `init --undo` takes all of it back out.
+
+  Three rules hold the design up.
+
+  - Nothing is touched without a record of what it was. Every file is copied
+    aside before its first change, and `~/.sumibako/init.json` lists what was
+    made and what was changed. `--undo` puts a file back byte for byte when
+    nothing else has written to it since, and otherwise takes out only what
+    init added, because a settings file is also its owner's and theirs to
+    keep editing.
+  - A hook never stops an agent. It runs in the background, exits 0 whatever
+    happens, and writes what went wrong to `~/.sumibako/hook.log`, never to
+    the agent's screen.
+  - A hook files a page and does nothing else: it never sends `publish`, so a
+    plan arrives private and a page somebody published stays as published as
+    they left it, showing the latest revision like any re-file does.
+
+  Where each agent keeps things was read from its own documentation and
+  source on 2026-11-23: Claude Code's hooks reference and skills page,
+  Codex's `codex-rs/hooks` and skill roots, Cursor's skills, MCP and hooks
+  pages. Cursor gets no hook: its plan mode has no hook of its own, and the
+  plan this follows decided to rely on the skill there.
+*/
+
+const SETUP_FILE = path.join(CONFIG_DIR, "init.json");
+const BACKUP_DIR = path.join(CONFIG_DIR, "init-backup");
+const HOOK_LOG = path.join(CONFIG_DIR, "hook.log");
+/** What every hook init installs runs, so init and --undo can recognise their own. */
+const HOOK_MARK = /\bsumibako(@\S+)? (hook|brief)\b/;
+/*
+  --prefer-offline: npx uses the copy it has rather than asking the registry
+  first, which is the difference between about 0.25s and up to 1.5s on every
+  run, measured 2026-11-23. A new release reaches a hook once npx's cache
+  takes it, which the brief's one-second budget is worth.
+*/
+const hookCommand = (agent) => `npx -y --prefer-offline sumibako hook ${agent}`;
+const briefCommand = (agent) => `npx -y --prefer-offline sumibako brief --hook ${agent}`;
+const PLAN_ICON = "\u{1F5FA}\u{FE0F}";
+
+/** The MCP address on the same site as the API this CLI talks to. */
+function mcpUrlFor(api) {
+  const base = api.replace(/\/+$/, "");
+  return base.endsWith("/api/agent")
+    ? `${base.slice(0, -"/api/agent".length)}/api/mcp`
+    : `${base}/mcp`;
+}
+
+/** The indentation a JSON file already uses, so a change does not reflow it. */
+function indentOf(text) {
+  const match = /\n([ \t]+)"/.exec(text ?? "");
+  return match ? match[1] : 2;
+}
+
+function parseJsonFile(text, what) {
+  if (!text || !text.trim()) return {};
+  try {
+    const value = JSON.parse(text);
+    if (value && typeof value === "object" && !Array.isArray(value)) return value;
+  } catch {
+    // Reported below.
+  }
+  throw new Error(`${what} is not a JSON object, so it was left alone.`);
+}
+
+const writeJson = (value, original) =>
+  `${JSON.stringify(value, null, indentOf(original))}\n`;
+
+const isOurs = (handler) =>
+  typeof handler?.command === "string" && HOOK_MARK.test(handler.command);
+
+/**
+ * A hooks file (Claude Code's settings.json or Codex's hooks.json) with our
+ * hook for one event added, or the one already there brought up to date.
+ * Both read `{ hooks: { Event: [{ matcher?, hooks: [{ type, command }] }] } }`.
+ */
+function withHook(text, { event, matcher, command, what, sync = false }) {
+  const settings = parseJsonFile(text, what);
+  const hooks =
+    settings.hooks && typeof settings.hooks === "object" ? settings.hooks : {};
+  const groups = Array.isArray(hooks[event]) ? hooks[event] : [];
+  // A plan hook runs in the background; the brief cannot, because its output
+  // is what the session starts with, so it gets a short timeout instead.
+  const handler = sync
+    ? { type: "command", command, timeout: 5 }
+    : { type: "command", command, async: true, timeout: 120 };
+  let found = false;
+  const next = groups.map((group) => {
+    if (!Array.isArray(group?.hooks) || !group.hooks.some(isOurs)) return group;
+    found = true;
+    return {
+      ...group,
+      ...(matcher ? { matcher } : {}),
+      hooks: group.hooks.map((one) => (isOurs(one) ? handler : one)),
+    };
+  });
+  if (!found) next.push({ ...(matcher ? { matcher } : {}), hooks: [handler] });
+  return writeJson({ ...settings, hooks: { ...hooks, [event]: next } }, text);
+}
+
+/** The same file with every hook of ours taken out, and anything left empty by that. */
+function withoutHooks(text, what) {
+  const settings = parseJsonFile(text, what);
+  if (!settings.hooks || typeof settings.hooks !== "object") return text;
+  const hooks = {};
+  for (const [event, groups] of Object.entries(settings.hooks)) {
+    if (!Array.isArray(groups)) {
+      hooks[event] = groups;
+      continue;
+    }
+    const kept = groups
+      .map((group) =>
+        Array.isArray(group?.hooks)
+          ? { ...group, hooks: group.hooks.filter((one) => !isOurs(one)) }
+          : group,
+      )
+      .filter((group) => !Array.isArray(group?.hooks) || group.hooks.length > 0);
+    if (kept.length > 0) hooks[event] = kept;
+  }
+  return writeJson(replaceKey(settings, "hooks", Object.keys(hooks).length ? hooks : undefined), text);
+}
+
+/** An object with one key replaced in place, or dropped when `value` is undefined. */
+function replaceKey(object, key, value) {
+  const out = {};
+  for (const [name, current] of Object.entries(object)) {
+    if (name !== key) out[name] = current;
+    else if (value !== undefined) out[name] = value;
+  }
+  return out;
+}
+
+/** Cursor's mcp.json with the server added. */
+function withCursorMcp(text, url) {
+  const config = parseJsonFile(text, "~/.cursor/mcp.json");
+  const servers =
+    config.mcpServers && typeof config.mcpServers === "object" ? config.mcpServers : {};
+  return writeJson({ ...config, mcpServers: { ...servers, sumibako: { url } } }, text);
+}
+
+function withoutCursorMcp(text) {
+  const config = parseJsonFile(text, "~/.cursor/mcp.json");
+  if (!config.mcpServers?.sumibako) return text;
+  const { sumibako: _gone, ...servers } = config.mcpServers;
+  return writeJson(
+    replaceKey(config, "mcpServers", Object.keys(servers).length ? servers : undefined),
+    text,
+  );
+}
+
+const CODEX_TABLE = "[mcp_servers.sumibako]";
+
+/**
+ * Codex's config.toml with the server's table appended. Text, not a TOML
+ * library: the file is its owner's, comments and all, and appending a table
+ * at the end is the one edit that cannot disturb anything above it.
+ */
+function withCodexMcp(text, url) {
+  const current = text ?? "";
+  if (current.split(/\r?\n/).some((line) => line.trim() === CODEX_TABLE)) return current;
+  const gap = current === "" ? "" : current.endsWith("\n") ? "\n" : "\n\n";
+  return `${current}${gap}${CODEX_TABLE}\nurl = ${JSON.stringify(url)}\n`;
+}
+
+/** The table taken back out: its header and its lines, up to the next table. */
+function withoutCodexMcp(text) {
+  const lines = (text ?? "").split("\n");
+  const start = lines.findIndex((line) => line.trim() === CODEX_TABLE);
+  if (start === -1) return text;
+  let end = start + 1;
+  while (end < lines.length && !/^\s*\[/.test(lines[end])) end += 1;
+  const before = lines.slice(0, start);
+  while (before.length && before[before.length - 1].trim() === "") before.pop();
+  const after = lines.slice(end);
+  const joined = [...before, ...after].join("\n");
+  return joined.trim() === "" ? "" : `${joined.replace(/\n+$/, "")}\n`;
+}
+
+// ---------------------------------------------------------------------------
+// The plan a hook files
+// ---------------------------------------------------------------------------
+
+const firstHeading = (markdown) => /^#\s+(.+)$/m.exec(markdown)?.[1]?.trim();
+
+/**
+ * The plan Claude Code just had approved, out of a PostToolUse payload for
+ * ExitPlanMode, or null.
+ *
+ * Claude Code writes the plan to a file in `~/.claude/plans/` before asking
+ * for approval, and its docs say the plan and its path are put into the
+ * tool's input before a hook sees it, without naming the fields. So this
+ * reads what is there in order: the plan text, a path to the file, and last
+ * the newest plan file written in the past half hour.
+ */
+function claudePlanFrom(input, { readFile, newestPlan }) {
+  if (input?.tool_name && input.tool_name !== "ExitPlanMode") return null;
+  const fields = [input?.tool_input, input?.tool_response].filter(
+    (value) => value && typeof value === "object",
+  );
+  const pick = (names) =>
+    fields
+      .flatMap((value) => names.map((name) => value[name]))
+      .find((value) => typeof value === "string" && value.trim());
+  const file = pick(["planFilePath", "filePath", "plan_file_path", "path"]);
+  let markdown = pick(["plan"]);
+  let source = typeof file === "string" && file.endsWith(".md") ? file : null;
+  if (!markdown && source) markdown = readFile(source);
+  if (!markdown) {
+    source = newestPlan();
+    markdown = source ? readFile(source) : null;
+  }
+  if (!markdown || !markdown.trim()) return null;
+  const session = String(input?.session_id ?? "").replace(/[^a-zA-Z0-9-]/g, "");
+  return {
+    markdown: markdown.trim(),
+    key: source
+      ? `plans/${path.basename(source)}`
+      : `plans/claude-code-${session || "plan"}.md`,
+    title: firstHeading(markdown) ? undefined : "Plan",
+  };
+}
+
+/**
+ * The plan Codex proposed in plan mode, out of a Stop payload, or null.
+ *
+ * Codex has no hook for a plan being approved. In plan mode it writes the
+ * plan inside a `<proposed_plan>` block in its reply (`codex-rs/utils/
+ * stream-parser/src/proposed_plan.rs`), and Stop hands over that reply, so
+ * the plan is filed as proposed, one page per session that each revision
+ * replaces.
+ */
+function codexPlanFrom(input) {
+  const message = input?.last_assistant_message;
+  if (typeof message !== "string") return null;
+  const blocks = [...message.matchAll(/<proposed_plan>([\s\S]*?)<\/proposed_plan>/g)];
+  const markdown = blocks.at(-1)?.[1]?.trim();
+  if (!markdown) return null;
+  const session = String(input?.session_id ?? "").replace(/[^a-zA-Z0-9-]/g, "");
+  return {
+    markdown,
+    key: `plans/codex-${session || "plan"}.md`,
+    title: firstHeading(markdown) ? undefined : "Proposed plan",
+  };
+}
+
+function logHook(line) {
+  try {
+    fs.mkdirSync(CONFIG_DIR, { recursive: true });
+    const stamp = new Date().toISOString();
+    let previous = "";
+    try {
+      previous = fs.readFileSync(HOOK_LOG, "utf8").slice(-50_000);
+    } catch {
+      // A first line.
+    }
+    fs.writeFileSync(HOOK_LOG, `${previous}${stamp} ${line}\n`);
+  } catch {
+    // Nowhere left to say it.
+  }
+}
+
+function readStdin(limitMs = 5000) {
+  if (process.stdin.isTTY) return Promise.resolve("");
+  return new Promise((resolve) => {
+    let data = "";
+    const done = () => {
+      clearTimeout(timer);
+      resolve(data);
+    };
+    const timer = setTimeout(done, limitMs);
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => {
+      data += chunk;
+    });
+    process.stdin.on("end", done);
+    process.stdin.on("error", done);
+  });
+}
+
+/** The newest `.md` in Claude Code's plans folder, written in the last half hour. */
+function newestClaudePlan(home) {
+  let folder = path.join(home, ".claude", "plans");
+  try {
+    const settings = JSON.parse(
+      fs.readFileSync(path.join(home, ".claude", "settings.json"), "utf8"),
+    );
+    if (typeof settings.plansDirectory === "string" && settings.plansDirectory.trim()) {
+      folder = settings.plansDirectory.replace(/^~(?=$|\/)/, home);
+    }
+  } catch {
+    // The default folder, then.
+  }
+  try {
+    const newest = fs
+      .readdirSync(folder)
+      .filter((name) => name.endsWith(".md"))
+      .map((name) => {
+        const full = path.join(folder, name);
+        return { full, at: fs.statSync(full).mtimeMs };
+      })
+      .sort((a, b) => b.at - a.at)[0];
+    return newest && Date.now() - newest.at < 30 * 60 * 1000 ? newest.full : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `sumibako hook <agent>`: what an installed hook runs. Reads the payload on
+ * stdin, files the plan in it, and exits 0 whatever happened.
+ */
+async function hook(positional) {
+  const agent = positional[0];
+  try {
+    const raw = await readStdin();
+    let input = {};
+    try {
+      input = raw.trim() ? JSON.parse(raw) : {};
+    } catch {
+      logHook(`${agent}: the payload was not JSON`);
+      return;
+    }
+    const readFile = (file) => {
+      try {
+        return fs.readFileSync(file, "utf8");
+      } catch {
+        return null;
+      }
+    };
+    const plan =
+      agent === "claude-code"
+        ? claudePlanFrom(input, { readFile, newestPlan: () => newestClaudePlan(os.homedir()) })
+        : agent === "codex"
+          ? codexPlanFrom(input)
+          : null;
+    if (!plan) return;
+
+    // Never the connect flow: it prints a link and exits 3, and nobody is
+    // looking at a hook's output.
+    const token = resolveToken();
+    if (!token) {
+      logHook(`${agent}: not connected, so the plan was not filed. Run: npx sumibako login`);
+      return;
+    }
+    const cwd = typeof input.cwd === "string" ? input.cwd : process.cwd();
+    const response = await fetch(`${resolveApi()}/v1/pages`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "Sumibako-Agent": agent,
+      },
+      body: JSON.stringify({
+        markdown: plan.markdown,
+        externalId: plan.key,
+        project: projectOf(cwd) ?? undefined,
+        title: plan.title,
+        icon: PLAN_ICON,
+      }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!response.ok) {
+      logHook(`${agent}: filing the plan failed with ${response.status} ${(await response.text()).slice(0, 300)}`);
+    }
+  } catch (error) {
+    logHook(`${agent}: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    process.exitCode = 0;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// What init does, worked out before anything is written
+// ---------------------------------------------------------------------------
+
+function onPath(command) {
+  const extensions = process.platform === "win32" ? ["", ".exe", ".cmd"] : [""];
+  for (const folder of (process.env.PATH ?? "").split(path.delimiter)) {
+    for (const extension of extensions) {
+      try {
+        fs.accessSync(path.join(folder, command + extension), fs.constants.X_OK);
+        return true;
+      } catch {
+        // Not here.
+      }
+    }
+  }
+  return false;
+}
+
+const exists = (file) => fs.existsSync(file);
+
+/**
+ * The agents on this machine and, for each, the steps init would take.
+ *
+ * A skill goes where the agent reads skills from. Cursor also reads Claude
+ * Code's and Codex's folders, so it is given its own copy only when neither
+ * has one, rather than seeing the same skill twice.
+ */
+function planSetup(home, api) {
+  const codexHome = process.env.CODEX_HOME?.trim() || path.join(home, ".codex");
+  const mcpUrl = mcpUrlFor(api);
+  const skillIn = (root) => path.join(root, "sumibako", "SKILL.md");
+  const sharedSkill = skillIn(path.join(home, ".agents", "skills"));
+  const agents = [];
+
+  if (exists(path.join(home, ".claude")) || onPath("claude")) {
+    agents.push({
+      id: "claude-code",
+      name: "Claude Code",
+      steps: [
+        { kind: "skill", file: skillIn(path.join(home, ".claude", "skills")) },
+        { kind: "claude-mcp", url: mcpUrl },
+        {
+          kind: "hook",
+          file: path.join(home, ".claude", "settings.json"),
+          event: "PostToolUse",
+          matcher: "ExitPlanMode",
+          what: "~/.claude/settings.json",
+        },
+        {
+          kind: "hook",
+          brief: true,
+          file: path.join(home, ".claude", "settings.json"),
+          event: "SessionStart",
+          what: "~/.claude/settings.json",
+        },
+      ],
+    });
+  }
+  if (exists(codexHome) || onPath("codex")) {
+    agents.push({
+      id: "codex",
+      name: "Codex",
+      steps: [
+        {
+          kind: "skill",
+          file: exists(sharedSkill) ? sharedSkill : skillIn(path.join(codexHome, "skills")),
+        },
+        { kind: "toml-mcp", file: path.join(codexHome, "config.toml"), url: mcpUrl },
+        {
+          kind: "hook",
+          file: path.join(codexHome, "hooks.json"),
+          event: "Stop",
+          what: "~/.codex/hooks.json",
+        },
+        {
+          kind: "hook",
+          brief: true,
+          file: path.join(codexHome, "hooks.json"),
+          event: "SessionStart",
+          what: "~/.codex/hooks.json",
+        },
+      ],
+    });
+  }
+  if (exists(path.join(home, ".cursor")) || onPath("cursor") || onPath("cursor-agent")) {
+    agents.push({
+      id: "cursor",
+      name: "Cursor",
+      steps: [
+        {
+          kind: "cursor-skill",
+          file: skillIn(path.join(home, ".cursor", "skills")),
+          // Cursor reads these as well (its skills page, "for compatibility").
+          readsAlready: [
+            skillIn(path.join(home, ".claude", "skills")),
+            skillIn(path.join(codexHome, "skills")),
+            sharedSkill,
+          ],
+        },
+        { kind: "json-mcp", file: path.join(home, ".cursor", "mcp.json"), url: mcpUrl },
+      ],
+    });
+  }
+  return agents;
+}
+
+const tilde = (file) => {
+  const home = os.homedir();
+  return file.startsWith(home) ? `~${file.slice(home.length)}` : file;
+};
+
+function describeStep(step) {
+  switch (step.kind) {
+    case "skill":
+      return `the skill, at ${tilde(step.file)}`;
+    case "cursor-skill":
+      return "the skill, unless Cursor already reads one from Claude Code's or Codex's folder";
+    case "claude-mcp":
+      return "the MCP server, with claude mcp add at user scope";
+    case "toml-mcp":
+    case "json-mcp":
+      return `the MCP server, in ${tilde(step.file)}`;
+    case "hook":
+      if (step.brief) {
+        return `a hook that starts each session with this project's recent pages (${tilde(step.file)})`;
+      }
+      return step.event === "Stop"
+        ? `a hook that files each plan it proposes, privately (${tilde(step.file)})`
+        : `a hook that files each plan you approve, privately (${tilde(step.file)})`;
+    default:
+      return step.text;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Writing, with a record of everything written
+// ---------------------------------------------------------------------------
+
+const sha = (text) => crypto.createHash("sha256").update(text ?? "").digest("hex");
+
+function readSetup() {
+  try {
+    return JSON.parse(fs.readFileSync(SETUP_FILE, "utf8"));
+  } catch {
+    return { items: [] };
+  }
+}
+
+function writeSetup(setup) {
+  fs.mkdirSync(CONFIG_DIR, { recursive: true });
+  fs.writeFileSync(SETUP_FILE, `${JSON.stringify(setup, null, 2)}\n`);
+}
+
+/**
+ * Writes one file and records it: created or changed, and where its
+ * original went. A file init has already changed keeps the copy of what it
+ * was before init first touched it, so running init twice still undoes to
+ * the very beginning.
+ */
+function writeRecorded(setup, agent, kind, file, next) {
+  const before = exists(file) ? fs.readFileSync(file, "utf8") : null;
+  if (before === next) return "unchanged";
+  let item = setup.items.find((entry) => entry.file === file);
+  if (!item) {
+    let backup = null;
+    if (before !== null) {
+      fs.mkdirSync(BACKUP_DIR, { recursive: true });
+      backup = path.join(BACKUP_DIR, `${setup.items.length + 1}-${path.basename(file)}`);
+      fs.copyFileSync(file, backup);
+    }
+    // Every folder this write is about to create, deepest first, so --undo
+    // can take them away again and leave no empty folder behind.
+    const madeFolders = [];
+    for (let folder = path.dirname(file); !exists(folder); folder = path.dirname(folder)) {
+      madeFolders.push(folder);
+      if (path.dirname(folder) === folder) break;
+    }
+    item = { agent, kind, file, created: before === null, backup, madeFolders };
+    setup.items.push(item);
+  }
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, next);
+  item.wrote = sha(next);
+  writeSetup(setup);
+  return before === null ? "added" : "updated";
+}
+
+function bundledSkill() {
+  return fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "SKILL.md"), "utf8");
+}
+
+/**
+ * Whether Claude Code already has a server called sumibako at user scope.
+ * Read from `~/.claude.json`, where `claude mcp add --scope user` keeps it,
+ * rather than asked of `claude mcp get`, which connects to the server to
+ * check its health and leaves logs behind.
+ */
+function claudeHasServer() {
+  try {
+    const config = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".claude.json"), "utf8"));
+    return Boolean(config?.mcpServers?.sumibako);
+  } catch {
+    return false;
+  }
+}
+
+function applyStep(setup, agent, step) {
+  switch (step.kind) {
+    case "skill":
+      return writeRecorded(setup, agent, "skill", step.file, bundledSkill());
+    case "cursor-skill": {
+      // Decided now, not when the list was made: the person may have said no
+      // to the agents whose copy Cursor would have read.
+      const shared = step.readsAlready.find(exists);
+      if (shared) return `reads ${tilde(shared)}, so no second copy`;
+      return writeRecorded(setup, agent, "skill", step.file, bundledSkill());
+    }
+    case "hook": {
+      const before = exists(step.file) ? fs.readFileSync(step.file, "utf8") : "";
+      return writeRecorded(
+        setup,
+        agent,
+        "hook",
+        step.file,
+        withHook(before, {
+          ...step,
+          sync: Boolean(step.brief),
+          command: step.brief ? briefCommand(agent) : hookCommand(agent),
+        }),
+      );
+    }
+    case "toml-mcp": {
+      const before = exists(step.file) ? fs.readFileSync(step.file, "utf8") : "";
+      return writeRecorded(setup, agent, "toml-mcp", step.file, withCodexMcp(before, step.url));
+    }
+    case "json-mcp": {
+      const before = exists(step.file) ? fs.readFileSync(step.file, "utf8") : "";
+      return writeRecorded(setup, agent, "json-mcp", step.file, withCursorMcp(before, step.url));
+    }
+    case "claude-mcp": {
+      if (!onPath("claude")) {
+        return `skipped: claude is not on the PATH. Run: claude mcp add --transport http --scope user sumibako ${step.url}`;
+      }
+      if (claudeHasServer()) return "already there";
+      execFileSync(
+        "claude",
+        ["mcp", "add", "--transport", "http", "--scope", "user", "sumibako", step.url],
+        { stdio: "ignore", timeout: 30_000 },
+      );
+      if (!setup.items.some((entry) => entry.kind === "claude-mcp")) {
+        setup.items.push({ agent, kind: "claude-mcp" });
+        writeSetup(setup);
+      }
+      return "added";
+    }
+    default:
+      return "";
+  }
+}
+
+async function ask(question) {
+  const readline = await import("node:readline/promises");
+  const prompt = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = (await prompt.question(`${question} [Y/n] `)).trim().toLowerCase();
+    return answer === "" || answer === "y" || answer === "yes";
+  } finally {
+    prompt.close();
+  }
+}
+
+async function init(flags) {
+  if (flags.undo === true) return undoInit();
+
+  const home = os.homedir();
+  const agents = planSetup(home, resolveApi());
+  if (agents.length === 0) {
+    console.log("No Claude Code, Codex or Cursor found on this machine.");
+    console.log(dim(`For another agent, add the MCP server ${mcpUrlFor(resolveApi())}`));
+    return;
+  }
+
+  console.log(bold("Found on this machine:"));
+  for (const agent of agents) {
+    console.log(`  ${bold(agent.name)}`);
+    for (const step of agent.steps) console.log(dim(`    ${describeStep(step)}`));
+  }
+  console.log();
+
+  if (flags["dry-run"] === true) {
+    console.log(dim("Nothing was changed (--dry-run)."));
+    return;
+  }
+
+  const interactive = process.stdin.isTTY && process.stdout.isTTY;
+  if (flags.yes !== true && !interactive) {
+    console.log("Nothing was changed: there is no terminal here to say yes in.");
+    console.log(dim("Run npx sumibako init --yes to set up everything listed, or run it in a terminal to choose."));
+    process.exitCode = 1;
+    return;
+  }
+
+  const setup = readSetup();
+  setup.version = version();
+  setup.updatedAt = new Date().toISOString();
+  const notes = [];
+
+  for (const agent of agents) {
+    if (flags.yes !== true) {
+      if (!(await ask(`Set up ${agent.name}?`))) continue;
+    }
+    let steps = agent.steps;
+    const hookStep = steps.find((step) => step.kind === "hook" && !step.brief);
+    if (hookStep && flags.yes !== true) {
+      const wantsHook = await ask(
+        `  File ${agent.id === "codex" ? "the plans Codex proposes" : "the plans you approve"} into Sumibako automatically, privately?`,
+      );
+      if (!wantsHook) steps = steps.filter((step) => step !== hookStep);
+    }
+    const briefStep = steps.find((step) => step.kind === "hook" && step.brief);
+    if (briefStep && flags.yes !== true) {
+      const wantsBrief = await ask(
+        "  Start each session with a short list of this project's recent pages?",
+      );
+      if (!wantsBrief) steps = steps.filter((step) => step !== briefStep);
+    }
+    console.log(bold(agent.name));
+    for (const step of steps) {
+      try {
+        const outcome = applyStep(setup, agent.id, step);
+        if (step.kind === "cursor-skill" && outcome.startsWith("reads")) {
+          console.log(`  ${green("shared")}  the skill: Cursor ${outcome}`);
+          continue;
+        }
+        if (outcome.startsWith("skipped: ")) {
+          console.log(`  ${yellow("skipped")}  ${outcome.slice("skipped: ".length)}`);
+          continue;
+        }
+        console.log(`  ${green(outcome)}  ${describeStep(step)}`);
+      } catch (error) {
+        console.log(`  ${yellow("skipped")}  ${describeStep(step)}`);
+        console.log(dim(`          ${error instanceof Error ? error.message : String(error)}`));
+      }
+    }
+    if (agent.id === "claude-code") {
+      notes.push("Claude Code: run /mcp, pick sumibako and choose Authenticate to sign the MCP server in.");
+    }
+    if (agent.id === "codex") {
+      notes.push("Codex: it asks you to trust the new hook the next time it starts. To sign the MCP server in, run: codex mcp login sumibako");
+    }
+    if (agent.id === "cursor") {
+      notes.push("Cursor: open Settings, then MCP, and sign in to sumibako there.");
+    }
+  }
+
+  console.log();
+  for (const note of notes) console.log(dim(note));
+  if (!resolveToken()) {
+    console.log();
+    console.log(`${bold("One more step:")} connect this machine, so the skill and the hooks can file pages.`);
+    console.log("  npx sumibako login");
+  }
+  console.log();
+  console.log(dim("npx sumibako init --undo takes all of this back out."));
+}
+
+function undoInit() {
+  const setup = readSetup();
+  if (!setup.items?.length) {
+    console.log("Nothing to undo: init has not changed anything on this machine.");
+    return;
+  }
+  for (const item of [...setup.items].reverse()) {
+    if (item.kind === "claude-mcp") {
+      try {
+        execFileSync("claude", ["mcp", "remove", "sumibako", "--scope", "user"], {
+          stdio: "ignore",
+          timeout: 30_000,
+        });
+        console.log(`  ${green("removed")}  the MCP server from Claude Code`);
+      } catch {
+        console.log(`  ${yellow("left")}  the MCP server in Claude Code. Run: claude mcp remove sumibako --scope user`);
+      }
+      continue;
+    }
+    const file = item.file;
+    const current = exists(file) ? fs.readFileSync(file, "utf8") : null;
+    if (current === null) {
+      console.log(`  ${dim("gone")}  ${tilde(file)}`);
+      continue;
+    }
+    if (sha(current) === item.wrote) {
+      // Nothing else wrote to it since: back exactly as it was.
+      if (item.created) {
+        fs.rmSync(file);
+        for (const folder of item.madeFolders ?? []) {
+          try {
+            fs.rmdirSync(folder);
+          } catch {
+            // Something else lives there now.
+            break;
+          }
+        }
+        console.log(`  ${green("removed")}  ${tilde(file)}`);
+      } else {
+        fs.copyFileSync(item.backup, file);
+        console.log(`  ${green("restored")}  ${tilde(file)}`);
+      }
+      continue;
+    }
+    // Edited since: take out only what init put in.
+    try {
+      const next =
+        item.kind === "hook"
+          ? withoutHooks(current, tilde(file))
+          : item.kind === "json-mcp"
+            ? withoutCursorMcp(current)
+            : item.kind === "toml-mcp"
+              ? withoutCodexMcp(current)
+              : null;
+      if (next === null) {
+        console.log(`  ${yellow("left")}  ${tilde(file)}, which was changed after init`);
+      } else {
+        fs.writeFileSync(file, next);
+        console.log(`  ${green("cleaned")}  ${tilde(file)} (changed since, so only Sumibako's part was taken out)`);
+      }
+    } catch (error) {
+      console.log(`  ${yellow("left")}  ${tilde(file)}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  fs.rmSync(SETUP_FILE, { force: true });
+  fs.rmSync(BACKUP_DIR, { recursive: true, force: true });
+  console.log(dim("Done. Pages already filed stay in the vault."));
+}
+
+// ---------------------------------------------------------------------------
+// brief: the project's recent pages, for an agent starting a session
+// ---------------------------------------------------------------------------
+
+/*
+  Epic 5 of the direction plan, a four-week experiment: does an agent that is
+  told what is already in the vault go and read it? `sumibako brief` prints
+  the project's recent pages, one line each, and `init` can install a
+  SessionStart hook in Claude Code and Codex that hands the same text to every
+  new session. The weekly report counts the brief apart from reads, and the
+  hook comes out of init if too few of the accounts that get one read.
+
+  The hook has one second (the plan's acceptance criterion). npx costs about a
+  quarter of that with --prefer-offline, measured on 2026-11-23, so the request
+  gets `BRIEF_WAIT_MS` and no more; when it is slower, the copy kept from the
+  last session in that project is used instead, saying how old it is.
+*/
+
+/** Roughly the most a brief may cost a session, in characters. */
+const BRIEF_CAP = 1500;
+const BRIEF_WAIT_MS = 650;
+const BRIEF_CACHE_DIR = path.join(CONFIG_DIR, "brief");
+/** A cached brief older than this is not worth showing. */
+const BRIEF_CACHE_DAYS = 7;
+
+const dateOnly = (at) => new Date(at).toISOString().slice(0, 10);
+
+/**
+ * The brief as text, never longer than `cap`. Pages are added newest first
+ * until the next one would not fit; what is left over is counted, so the
+ * agent knows to search rather than believe the list is everything.
+ */
+function renderBrief({ project, pages, total }, cap = BRIEF_CAP) {
+  if (!pages?.length) return "";
+  const head = [
+    `Recent pages in the user's Sumibako vault for ${project}, newest first.`,
+    `Read one with: npx sumibako open --key <key> --project ${project} --markdown (or open <id> for a page with no key).`,
+    "",
+  ].join("\n");
+  let body = "";
+  let shown = 0;
+  for (const page of pages) {
+    const handle = page.externalId ? `key ${page.externalId}` : `id ${page.documentId}`;
+    const flags = page.publicUrl ? (page.access === "passcode" ? ", shared with a passcode" : ", published") : "";
+    const line = `- ${page.title || "Untitled"} (${dateOnly(page.updatedAt)}, ${handle}${flags})${page.summary ? `\n  ${page.summary}` : ""}\n`;
+    const more = total - (shown + 1);
+    const tail = more > 0 ? `...and ${more} more: npx sumibako search <words>\n` : "";
+    if ((head + body + line + tail).length > cap) break;
+    body += line;
+    shown += 1;
+  }
+  if (shown === 0) return "";
+  const rest = total - shown;
+  return `${head}${body}${rest > 0 ? `...and ${rest} more: npx sumibako search <words>\n` : ""}`.trimEnd();
+}
+
+function briefCacheFile(project) {
+  return path.join(BRIEF_CACHE_DIR, `${sha(project).slice(0, 16)}.json`);
+}
+
+async function fetchBrief(project, limit, waitMs) {
+  const token = resolveToken();
+  if (!token) return { error: "not connected" };
+  const url = new URL(`${resolveApi()}/v1/pages/brief`);
+  url.searchParams.set("project", project);
+  if (limit) url.searchParams.set("limit", String(limit));
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(runningAgent ? { "Sumibako-Agent": runningAgent } : {}),
+    },
+    signal: AbortSignal.timeout(waitMs),
+  });
+  if (!response.ok) return { error: `${response.status} ${(await response.text()).slice(0, 200)}` };
+  return { result: await response.json() };
+}
+
+/**
+ * `sumibako brief [--project <name>] [--limit <n>]`, and `--hook <agent>` when
+ * a SessionStart hook runs it. As a hook it reads the payload on stdin,
+ * answers only a session that is starting fresh (not one resumed or
+ * compacted, which still has its context), prints the reply both Claude Code
+ * and Codex read (`hookSpecificOutput.additionalContext`), and exits 0 with
+ * nothing printed whenever it has nothing worth saying.
+ */
+async function brief(flags) {
+  const agent = typeof flags.hook === "string" ? flags.hook : null;
+  if (!agent) {
+    const project =
+      typeof flags.project === "string" && flags.project.trim()
+        ? flags.project.trim()
+        : projectOf(process.cwd());
+    if (!project) die("This folder is not in a repository.", "Pass --project owner/name.");
+    const limit = typeof flags.limit === "string" ? Number(flags.limit) : undefined;
+    const result = await callApi("GET", "/v1/pages/brief", {
+      retry: true,
+      query: { project, limit },
+    });
+    console.log(renderBrief(result) || dim(`No pages in ${project} yet.`));
+    return;
+  }
+
+  // The agent the hook was installed for, whatever the shell says.
+  runningAgent = agent;
+  try {
+    let input = {};
+    try {
+      const raw = await readStdin(1000);
+      input = raw.trim() ? JSON.parse(raw) : {};
+    } catch {
+      input = {};
+    }
+    // A fresh session, or one cleared: those are the ones with nothing in mind.
+    if (input.source && input.source !== "startup" && input.source !== "clear") return;
+    const cwd = typeof input.cwd === "string" ? input.cwd : process.cwd();
+    const project =
+      typeof flags.project === "string" && flags.project.trim()
+        ? flags.project.trim()
+        : projectOf(cwd);
+    if (!project) return;
+
+    let text = "";
+    const cacheFile = briefCacheFile(project);
+    try {
+      const { result, error } = await fetchBrief(project, undefined, BRIEF_WAIT_MS);
+      if (result) {
+        text = renderBrief(result);
+        fs.mkdirSync(BRIEF_CACHE_DIR, { recursive: true });
+        fs.writeFileSync(cacheFile, JSON.stringify({ at: Date.now(), text }));
+      } else {
+        logHook(`brief ${agent}: ${error}`);
+      }
+    } catch (error) {
+      logHook(`brief ${agent}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (!text) {
+      try {
+        const cached = JSON.parse(fs.readFileSync(cacheFile, "utf8"));
+        if (cached.text && Date.now() - cached.at < BRIEF_CACHE_DAYS * 24 * 60 * 60 * 1000) {
+          text = `${cached.text}\n(As of ${dateOnly(cached.at)}; the vault did not answer in time.)`;
+        }
+      } catch {
+        // No copy either: say nothing.
+      }
+    }
+    if (!text) return;
+    process.stdout.write(
+      `${JSON.stringify({
+        hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: text },
+      })}\n`,
+    );
+  } catch (error) {
+    logHook(`brief ${agent}: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    process.exitCode = 0;
   }
 }
 
@@ -1683,6 +2754,7 @@ const HELP = `
 ${bold("sumibako")} - file what your coding agent wrote into your vault
 
   ${bold("sumibako login")} [--token <t>] [--api <url>]  connect this machine
+  ${bold("sumibako init")} [--yes | --undo]            set up Claude Code, Codex and Cursor here
   ${bold("sumibako publish")} <file.md> [--public]  file a Markdown file as a page
   ${bold("sumibako unpublish")} <file.md>           take a published page off the web
   ${bold("sumibako append")} <file.md> <text>       add to the end of a page
@@ -1690,6 +2762,7 @@ ${bold("sumibako")} - file what your coding agent wrote into your vault
   ${bold("sumibako edit")} <file.md> --find ...     replace one piece of text
   ${bold("sumibako open")} <file.md> [--markdown]   print the links, or the page
   ${bold("sumibako search")} [words]                search your vault, or list it
+  ${bold("sumibako brief")} [--project <name>]      this project's recent pages, one line each
   ${bold("sumibako whoami")}                        check the token and plan
   ${bold("sumibako logout")}                        forget the token
 
@@ -1698,6 +2771,7 @@ ${bold("Options for publish")}
   --passcode          publish it behind a passcode, printed with the link
   --new-passcode      replace the passcode; the old one stops working
   --anyone            let anyone with the link open it, removing a passcode
+  --expires <when>    7d, 30d or never: how long the link works, from now
   --title <title>     override the title (default: the first heading)
   --icon <emoji>      the page's icon, one emoji (default: guessed from the title)
   --cover <name>      the banner across the top (default: picked from the title)
@@ -1705,6 +2779,8 @@ ${bold("Options for publish")}
   --project <name>    the project it belongs to (default: the repository)
   --new               file a new page even if this file was filed before
   --parent <page-id>  nest it under an existing page
+  --agent <name>      which agent is writing (default: worked out from the
+                      shell; claude-code, codex, cursor, gemini, ...)
 
 ${bold("Options for append, attach and edit")}
   --prepend           add to the start of the page instead of the end
@@ -1757,6 +2833,22 @@ ${bold("Passcodes")}
   keeps the passcode and the link; only --anyone takes it off. open prints the
   passcode again whenever it is needed.
 
+${bold("Links that expire")}
+  --expires 7d or 30d makes the link stop working that long from now; the
+  page then goes private by itself. Publishing again keeps the date and never
+  extends it. A page whose link ran out stays private: publishing it again
+  files the changes and leaves it down until you pass --expires again.
+
+${bold("Setting up your agents")}
+  init finds Claude Code, Codex and Cursor on this machine and, with a yes
+  for each, gives every one the skill and the MCP server, and Claude Code and
+  Codex a hook that files each plan into your vault as a private page: the
+  plan you approve in Claude Code, the plan Codex proposes; and a hook that
+  starts each new session with this project's recent pages (brief). --yes says yes to
+  all of it, --dry-run only lists it, and --undo takes it all back out,
+  putting each file back exactly as it was if nothing has changed it since.
+  A hook never publishes, never stops the agent, and logs to ~/.sumibako/hook.log.
+
 ${bold("Connecting")}
   Any command will start it: with no token, it prints a link to open and exits
   with code 3. Open the link, approve it, run the same command again. Nothing
@@ -1772,6 +2864,7 @@ ${bold("Environment")}
 async function main() {
   const [command, ...rest] = process.argv.slice(2);
   const { flags, positional } = parseFlags(rest);
+  runningAgent = detectAgent(process.env, flags.agent);
 
   if (!command || command === "help" || flags.help === true) {
     console.log(HELP);
@@ -1806,6 +2899,12 @@ async function main() {
       return search(positional);
     case "whoami":
       return whoami();
+    case "init":
+      return init(flags);
+    case "hook":
+      return hook(positional);
+    case "brief":
+      return brief(flags);
     default:
       die(`Unknown command: ${command}`, "Run `sumibako help` for the list.");
   }
@@ -1828,4 +2927,23 @@ if (!process.env.SUMIBAKO_AS_MODULE) {
   });
 }
 
-export { COVERS, findEmbeds, hostedEmbed, locateEmbed, projectFromRemote };
+export {
+  briefCommand,
+  claudePlanFrom,
+  codexPlanFrom,
+  COVERS,
+  detectAgent,
+  findEmbeds,
+  hookCommand,
+  hostedEmbed,
+  locateEmbed,
+  mcpUrlFor,
+  projectFromRemote,
+  renderBrief,
+  withCodexMcp,
+  withCursorMcp,
+  withHook,
+  withoutCodexMcp,
+  withoutCursorMcp,
+  withoutHooks,
+};

@@ -1,0 +1,14 @@
+{
+  "name": "sumibako",
+  "description": "File the plans, specs and notes your agent writes into your Sumibako vault, and get back a link you can send. Bundles the skill, the Sumibako connector, and Claude Code hooks that file each approved plan privately.",
+  "version": "0.4.0",
+  "author": {
+    "name": "Sumibako",
+    "url": "https://sumibako.com"
+  },
+  "homepage": "https://sumibako.com/agents",
+  "repository": "https://github.com/sumibako/agents",
+  "license": "MIT",
+  "privacyPolicyUrl": "https://sumibako.com/privacy",
+  "icon": ".claude-plugin/icon.png"
+}

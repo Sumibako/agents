@@ -74,6 +74,8 @@ in the environment overrides everything, which is what CI should use.
 | `sumibako publish <file.md>` | File a Markdown file as a page |
 | `sumibako publish <file.md> --public` | And put it on the web, printing the link |
 | `sumibako publish <file.md> --passcode` | Put it on the web behind a passcode, printed with the link |
+| `sumibako init` | Set up Claude Code, Codex and Cursor on this machine, with plan hooks |
+| `sumibako brief` | This project's recent pages, one line each, as an agent's session starts |
 | `sumibako unpublish <file.md>` | Take the page off the web |
 | `sumibako append <file.md> "text"` | Add to the end of a page |
 | `sumibako attach <file.md> <file...>` | Add images, PDFs and other files to a page |
@@ -91,6 +93,7 @@ in the environment overrides everything, which is what CI should use.
 | `--passcode` | Publish it behind a six-character passcode, printed under the link |
 | `--new-passcode` | Replace the passcode; the old one stops opening the page |
 | `--anyone` | Let anyone with the link open it, taking a passcode off |
+| `--expires <7d\|30d\|never>` | How long the link works, from now; the page goes private when it runs out |
 | `--title <title>` | Override the title, which otherwise comes from the first heading |
 | `--icon <emoji>` | The page's icon, one emoji; without it a new page gets one guessed from its title. An `icon:` line in the file's frontmatter does the same |
 | `--cover <name>` | The banner across the top of the page, by name, or `none`; without it a new page gets one picked from its title. A `cover:` line in the frontmatter does the same. `sumibako help` lists the names |
@@ -199,6 +202,41 @@ Two things degrade, and the command says so when they do:
 - **Mermaid** renders as a plain code block. There is no diagram renderer.
 - **Raw HTML** is kept as text.
 
+## Setting up your agents
+
+```bash
+npx sumibako init
+```
+
+Finds Claude Code, Codex and Cursor on this machine and asks, for each,
+before it changes anything. A yes gives that agent:
+
+- the skill, in the folder it reads skills from (`~/.claude/skills`,
+  `~/.codex/skills`; Cursor reads either, so it is given its own copy only
+  when neither has one);
+- the MCP server (`claude mcp add` at user scope, a table in
+  `~/.codex/config.toml`, an entry in `~/.cursor/mcp.json`), which each agent
+  then signs in to;
+- for Claude Code and Codex, a hook that files plans into your vault as
+  private pages: in Claude Code the plan you approve (a `PostToolUse` hook on
+  `ExitPlanMode` in `~/.claude/settings.json`), in Codex the plan it proposes
+  in plan mode (a `Stop` hook in `~/.codex/hooks.json`, which Codex asks you
+  to trust the next time it starts). Each plan is one page that its revisions
+  update. A hook never publishes, never holds the agent up, and writes what
+  went wrong to `~/.sumibako/hook.log`.
+
+- for Claude Code and Codex, a hook that starts each new session with this
+  project's recent pages, one line each (`sumibako brief`, about 400 tokens,
+  at most 1,500 characters). It waits at most about two thirds of a second
+  for the vault and otherwise uses the list from the last session. This is
+  an experiment, and it comes out of init if agents do not go on to read
+  what it lists.
+
+`--yes` says yes to everything, `--dry-run` only lists it. `init --undo` takes
+it all back out: every file init changed is copied aside first, and put back
+byte for byte if nothing has written to it since; otherwise only what init
+added is removed. Pages already filed stay in the vault.
+
 ## Privacy
 
 Pages are private until you pass `--public`. A published page has a link anyone
@@ -215,6 +253,13 @@ unlocked for 30 days. Send the passcode separately from the link when you can.
 Publishing again keeps the passcode, with or without `--public`, so an agent
 re-filing a plan cannot quietly take the lock off. Only `--anyone` does that.
 `sumibako open <file.md>` prints the passcode again whenever it is needed.
+
+`--expires 7d` or `--expires 30d` makes the link stop working that long from
+now. When it runs out the page goes private by itself, and its link shows
+"This link has expired" with nothing of the page on it. Publishing again keeps
+the date and never extends it. A page whose link ran out stays private when
+it is published again, until `--expires` is passed again: an agent re-filing a
+plan cannot bring a link back to life on its own.
 
 ## For agents
 

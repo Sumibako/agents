@@ -3,10 +3,10 @@ name: sumibako
 description: File a plan, spec, ADR, handoff note or research report into the user's Sumibako vault and get back a link they can send to someone. Use when the user asks to save, file, publish or share a document you wrote, or asks for "a link to this", or says a teammate needs to read it. Also use to read, amend or take down a page already in the vault, to add an image, a PDF or another file to one, and to search what is there before writing something new.
 license: MIT
 compatibility: Requires Node 18+ and network access to sumibako.com
-allowed-tools: Bash(npx sumibako search:*) Bash(npx sumibako open:*) Bash(npx sumibako whoami)
+allowed-tools: Bash(npx sumibako search:*) Bash(npx sumibako open:*) Bash(npx sumibako brief:*) Bash(npx sumibako whoami)
 metadata:
   author: sumibako
-  version: "0.7.0"
+  version: "0.8.0"
   homepage: https://sumibako.com/agents
   repository: https://github.com/sumibako/agents
 ---
@@ -144,6 +144,28 @@ passcode separately from the link - another message, another channel.
 
 A passcode is not a list of people: whoever the user forwards it to gets in.
 
+### Links that expire
+
+When the user wants a link that stops working after a while - "for a week",
+"a temporary link", "just until the review" - add `--expires 7d` or
+`--expires 30d`. It works with `--public` and with `--passcode`:
+
+```bash
+npx sumibako publish docs/plans/auth-rewrite.md --public --expires 7d
+```
+
+The command prints the day the link stops working under the link. Tell the
+user that day along with the link.
+
+- **Publishing again keeps the date** and never extends it. Only a new
+  `--expires` moves it, counted from then.
+- **When the link runs out, the page goes private by itself and stays
+  private.** Re-running `publish` still files your changes, and prints a note
+  that the link expired instead of a link. Do not pass `--expires` to put it
+  back up on your own: ask the user first, because everyone who was ever sent
+  the old link can open it again.
+- `--expires never` takes the end date off.
+
 ### Give it an icon
 
 Every page gets an icon: one emoji, shown beside the title in the sidebar and
@@ -171,6 +193,22 @@ One emoji, not a word and not two; anything else is refused with the rule.
 If you send none, a new page gets one guessed from its title, and a page
 that already exists keeps whatever it has - which may be one the user chose
 by hand, so do not change it unless they asked.
+
+### Say which agent you are
+
+Pass `--agent` with your own name every time you run a command that writes:
+`claude-code`, `codex`, `cursor`, `gemini`, `copilot`, or whatever you are
+called.
+
+```bash
+npx sumibako publish docs/plans/auth-rewrite.md --icon 🗺️ --agent codex
+```
+
+The user's vault marks each page with the agent that wrote it and lets them
+filter by agent, which matters to somebody who runs more than one. The command
+can often tell by itself from the shell it runs in, but not always, and a page
+it cannot place is marked "Other agent". The flag works on every command:
+`publish`, `append`, `attach`, `edit`, `unpublish`, `open` and `search`.
 
 ### Give it a cover
 
@@ -260,6 +298,39 @@ When it happens:
   publish.
 - If they approve, run it once. If they decline, leave it and say the document
   is still local.
+
+## Setting up the other agents on this machine
+
+When the user asks to set Sumibako up for their other agents too, run:
+
+```bash
+npx sumibako init --yes
+```
+
+It finds Claude Code, Codex and Cursor and gives each the skill and the MCP
+server, and gives Claude Code and Codex a hook that files every plan into the
+vault as a private page. `npx sumibako init --undo` takes it all back out. It
+changes the user's agent settings, so run it only when they ask.
+
+When that hook is installed, a plan the user approves in Claude Code (or one
+Codex proposes) is already in their vault, privately, titled from the plan.
+Do not file the same plan again by hand; tell the user it is there.
+
+## What is already in the vault
+
+A session may start with a short list headed "Recent pages in the user's
+Sumibako vault for owner/name": the project's latest pages, one line each,
+put there by a hook `init` installs. When one of them bears on the task -
+the plan you are about to implement, a decision about the code you are
+changing - read it before you start:
+
+```bash
+npx sumibako open --key docs/plans/auth.md --project acme/app --markdown
+```
+
+And when you are about to write a plan or a decision, check the list first:
+updating the page that is already there beats filing a second one. Run
+`npx sumibako brief` to see the list again.
 
 ## The one rule that matters
 

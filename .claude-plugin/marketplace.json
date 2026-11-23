@@ -1,0 +1,14 @@
+{
+  "name": "sumibako",
+  "description": "Sumibako for Claude: the skill, the connector and the plan hooks.",
+  "owner": {
+    "name": "Sumibako"
+  },
+  "plugins": [
+    {
+      "name": "sumibako",
+      "source": "./",
+      "description": "File the plans, specs and notes your agent writes into your Sumibako vault, and get back a link you can send. Bundles the skill, the Sumibako connector, and Claude Code hooks that file each approved plan privately."
+    }
+  ]
+}

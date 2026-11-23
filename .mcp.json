@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "sumibako": {
+      "type": "http",
+      "url": "https://sumibako.com/api/mcp"
+    }
+  }
+}

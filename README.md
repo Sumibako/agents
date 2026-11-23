@@ -49,6 +49,23 @@ app, one page at a time.
 
 You can revoke a machine's access at any time in Settings, under Coding agents.
 
+## As a Claude plugin
+
+The same repository is a Claude plugin and the marketplace that lists it: the
+skill, the Sumibako connector, and for Claude Code two hooks, in one install.
+In Claude Code:
+
+```
+/plugin marketplace add sumibako/agents
+/plugin install sumibako@sumibako
+```
+
+The connector asks you to sign in to Sumibako the first time a tool is used.
+The hooks file each plan you approve as a private page, and start a new session
+with a short list of the project's recent pages; both need `npx sumibako`
+connected on the machine, which the skill does the first time it runs, and
+until then they do nothing at all. Neither ever publishes.
+
 ## Without the skill
 
 The skill is instructions, not the tool. The tool is
